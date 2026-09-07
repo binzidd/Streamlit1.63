@@ -156,6 +156,8 @@ if active_view == "Overview":
 
     st.plotly_chart(charts.region_bar(filtered_df), use_container_width=True, config={"displayModeBar": False})
 
+    st.plotly_chart(charts.income_statement_sankey(filtered_df), use_container_width=True, config={"displayModeBar": False})
+
 elif active_view == "Profitability":
     c1, c2 = st.columns(2)
     with c1:

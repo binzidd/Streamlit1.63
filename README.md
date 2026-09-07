@@ -66,7 +66,10 @@ streamlit run app.py
 
 - **Overview** — half-on-half Cash NPAT (click a bar to jump the whole page
   to that half), operating income by segment and by region (display-only,
-  see the note above — use the dropdown filters to slice by these).
+  see the note above — use the dropdown filters to slice by these), and an
+  income-statement Sankey tracing segment income through to expenses, tax,
+  and Cash NPAT (also display-only — Plotly Sankey nodes don't emit
+  box/lasso selection events for `on_select` to pick up).
 - **Profitability** — Net Interest Margin and Cost-to-Income trend lines,
   operating income vs. expenses, loan impairment expense by half.
 - **Balance Sheet** — deposits vs. gross loans over time, gross loans by
