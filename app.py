@@ -51,6 +51,14 @@ st.markdown(
        other otherwise, which is what made the chart grid read as one solid
        block instead of a set of distinct cards. */
     div[data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 1.1rem; }
+    /* The small-multiples facet chart has a fixed per-panel width (it can't
+       reflow like a single-view chart can). Streamlit measured it against
+       the card's content width and rendered it wider than that -- the
+       constraining box turned out to be stFullScreenFrame (Streamlit's
+       expand-to-fullscreen wrapper), not the chart element itself, so the
+       last panel was bleeding past the card and getting cropped by
+       something further up the tree. Scroll rather than crop. */
+    div[data-testid="stFullScreenFrame"] { overflow-x: auto; }
     </style>
     """,
     unsafe_allow_html=True,
