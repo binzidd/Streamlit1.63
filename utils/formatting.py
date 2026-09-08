@@ -29,19 +29,19 @@ def fmt_number(value: float) -> str:
     return f"{value:,.0f}"
 
 
-def fmt_delta_pct(current: float, prior: float) -> tuple[str, float | None]:
+def fmt_delta_pct(current: float, prior: float, label: str = "prior period") -> tuple[str, float | None]:
     """Return (display string, raw pct-change) comparing current vs prior."""
     if prior in (None, 0) or current is None:
-        return "n/a vs prior period", None
+        return f"n/a vs {label}", None
     change = (current - prior) / abs(prior)
     arrow = "▲" if change >= 0 else "▼"
-    return f"{arrow} {abs(change) * 100:.1f}% vs prior period", change
+    return f"{arrow} {abs(change) * 100:.1f}% vs {label}", change
 
 
-def fmt_delta_pp(current: float, prior: float) -> tuple[str, float | None]:
+def fmt_delta_pp(current: float, prior: float, label: str = "prior period") -> tuple[str, float | None]:
     """Delta in percentage points, for ratio-type KPIs (NIM, CTI)."""
     if prior is None or current is None:
-        return "n/a vs prior period", None
+        return f"n/a vs {label}", None
     change_pp = (current - prior) * 100
     arrow = "▲" if change_pp >= 0 else "▼"
-    return f"{arrow} {abs(change_pp):.1f}pp vs prior period", change_pp
+    return f"{arrow} {abs(change_pp):.1f}pp vs {label}", change_pp

@@ -84,26 +84,26 @@ VIEW_FOR_KPI = {
 }
 
 
-def render_kpi_row(period_df: pd.DataFrame, prior_df: pd.DataFrame, trend_df: pd.DataFrame, active_view_key: str) -> None:
+def render_kpi_row(period_df: pd.DataFrame, compare_df: pd.DataFrame, trend_df: pd.DataFrame, active_view_key: str, compare_label: str = "prior period") -> None:
     # .copy(): sparkline/KPI charts and the Overview bar charts otherwise read
     # the same columns off the same shared DataFrame, which confuses
     # Streamlit's plotly_chart on_select bridge for unrelated widgets later
     # in the run (see the matching comment in components/charts.py).
     period_df = period_df.copy()
-    prior_df = prior_df.copy()
+    compare_df = compare_df.copy()
     trend_df = trend_df.copy()
     cols = st.columns(len(KPI_DEFS))
     for col, kpi in zip(cols, KPI_DEFS):
         series = kpi["series_fn"](period_df)
         current = _period_value(series, kpi["kind"])
 
-        prior_series = kpi["series_fn"](prior_df) if not prior_df.empty else pd.Series(dtype=float)
-        prior = _period_value(prior_series, kpi["kind"])
+        compare_series = kpi["series_fn"](compare_df) if not compare_df.empty else pd.Series(dtype=float)
+        prior = _period_value(compare_series, kpi["kind"])
 
         if kpi["delta"] == "pp":
-            delta_str, raw = fmt_delta_pp(current, prior) if current is not None else ("n/a vs prior period", None)
+            delta_str, raw = fmt_delta_pp(current, prior, compare_label) if current is not None else (f"n/a vs {compare_label}", None)
         else:
-            delta_str, raw = fmt_delta_pct(current, prior) if current is not None else ("n/a vs prior period", None)
+            delta_str, raw = fmt_delta_pct(current, prior, compare_label) if current is not None else (f"n/a vs {compare_label}", None)
 
         invert = kpi.get("delta_invert", False)
         if raw is None:
