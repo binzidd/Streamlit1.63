@@ -2,14 +2,15 @@
 
 A demo built on **Streamlit 1.63.0**. Everything is on one page — no tabs, no
 hunting across subject areas — and **every chart is a filter**: click a
-heatmap cell, a dumbbell, a variance bar, a bubble or a small-multiple panel
+segment bar, a dumbbell, a variance bar, a bubble or a small-multiple panel
 and the whole page recomputes around that selection.
 
 > **Illustrative data only.** The dataset is randomly generated (seeded, so
 > it's reproducible) in the shape of a diversified bank's earnings — Retail
 > Banking, Business Banking, Institutional Banking & Markets, and a New
-> Zealand arm. It is **not** the real reported financial results of any
-> institution; it exists to give the dashboard a believable, drillable shape.
+> Zealand arm, each split further into 2-3 departments. It is **not** the
+> real reported financial results of any institution; it exists to give the
+> dashboard a believable, drillable shape.
 
 ## Why native Altair
 
@@ -40,7 +41,7 @@ deliberately not six more line and bar charts:
 
 | Chart | Form | Why |
 |---|---|---|
-| Operating income by segment & month | **heatmap**, sequential single hue | a grid of magnitudes; far more data per pixel than a stack of bar charts |
+| Operating income by segment → department | **sorted bar, two-level drill-down** | click a segment bar and the same panel re-renders one level down into that segment's departments — sorted length reads four-ish magnitudes at a glance and doubles as the drill target, where a heatmap's colour intensity could not |
 | Actual vs budget by segment | **dumbbell** | before→after per item — the gap *is* the variance, instead of making you compare two bar heights |
 | Variance to budget by region | **diverging bar**, centred on zero | above/below budget reads as direction, not as two similar heights |
 | Margin vs efficiency | **bubble scatter**, emphasis colouring | shows the NIM/cost-to-income relationship; one accent + gray rather than four hues, since every bubble sits beside every other |
@@ -59,6 +60,14 @@ direct labels.
 
 - **KPI strip** — six stat tiles (value, delta, sparkline). A "Compare To"
   control switches every delta between Prior Period and Budget at once.
+- **Every chart card is bordered and titled, and the title tells you what's
+  active.** Clicking a mark doesn't just filter the data — the affected
+  cards' subtitles update live ("Filtered to Retail Banking Services · Home
+  Loans"), Tableau's dynamic-title convention, so the page never shows a
+  filtered view without saying so.
+- **Department is a full drill-down dimension**, not just a chart feature —
+  it filters KPIs, every other chart, and the Data & Export pivot exactly
+  like segment or region does.
 - **The URL is the view.** Every filter round-trips through `st.query_params`,
   so a filtered view can be copied, shared, and reloaded exactly.
 - **An Excel escape hatch.** "Data & export" exports exactly what's on screen,

@@ -14,6 +14,8 @@ of Streamlit interactivity, not a real financial report.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pandas as pd
 import streamlit as st
 
@@ -43,16 +45,38 @@ st.markdown(
                         letter-spacing: 0.01em; line-height: 1.35; }
     .pulse-card-hint { font-size: 0.68rem; color: #898781; line-height: 1.35;
                        margin-bottom: 0.2rem; }
+    .pulse-card-hint.is-filtered { color: #2a78d6; font-weight: 600; }
+    /* Every bordered container (KPI tiles, chart cards) gets breathing room
+       below it -- Streamlit lays consecutive containers flush against each
+       other otherwise, which is what made the chart grid read as one solid
+       block instead of a set of distinct cards. */
+    div[data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 1.1rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 
-def card(title: str, hint: str = "") -> None:
-    st.markdown(f'<div class="pulse-card-title">{title}</div>', unsafe_allow_html=True)
-    if hint:
-        st.markdown(f'<div class="pulse-card-hint">{hint}</div>', unsafe_allow_html=True)
+@contextmanager
+def card(title: str, hint: str = "", owns: str | None = None):
+    """Bordered chart card with a heading that updates live with the active
+    cross-filters (Tableau's dynamic-title convention: a click doesn't just
+    change what a chart shows, it changes what the chart is now titled).
+
+    `owns` is the filter dimension this specific chart's own marks already
+    ARE ("segments"/"regions"/"department") -- left out of its own dynamic
+    subtitle, since a chart showing segment bars doesn't need to also tell
+    you it's filtered to a segment. Charts that don't own a dimension
+    (the waterfall) pass owns=None and show the full active-filter context.
+    """
+    with st.container(border=True):
+        st.markdown(f'<div class="pulse-card-title">{title}</div>', unsafe_allow_html=True)
+        ctx = state.filter_summary(exclude=owns)
+        if ctx:
+            st.markdown(f'<div class="pulse-card-hint is-filtered">Filtered to {ctx}</div>', unsafe_allow_html=True)
+        if hint:
+            st.markdown(f'<div class="pulse-card-hint">{hint}</div>', unsafe_allow_html=True)
+        yield
 
 
 # -------------------------------------------------------------------- data --
@@ -120,53 +144,65 @@ if filtered_df.empty:
 
 segments_sel = st.session_state[state.SEGMENTS_KEY]
 regions_sel = st.session_state[state.REGIONS_KEY]
+department_sel = st.session_state[state.DEPARTMENT_KEY]
 
 # ----------------------------------------------------------------- KPI row --
 render_kpi_row(filtered_df, compare_df, trend_df, compare_label=compare_label)
 
 # ------------------------------------------------------------- chart grid --
-row1_a, row1_b = st.columns([1.35, 1])
+row1_a, row1_b = st.columns(2, gap="large")
 with row1_a:
-    card("Operating income by segment & month", "Click a cell to filter that segment")
-    chart, param = C.segment_heatmap(state.apply_filters_excluding(df, "segments"), segments_sel)
-    ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("heatmap"), use_container_width=True)
-    if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("heatmap")):
-        st.rerun()
+    drilled = len(segments_sel) == 1
+    if drilled:
+        drill_title = f"Operating income by department — {segments_sel[0]}"
+        drill_hint = "Click a bar to filter that department · clear the Segment chip above to zoom back out"
+    else:
+        drill_title = "Operating income by segment"
+        drill_hint = "Click a bar to drill into that segment's departments"
+    with card(drill_title, drill_hint, owns=("department" if drilled else "segments")):
+        df_top = state.apply_filters_excluding(df, "segments")
+        df_drilled = state.apply_filters_excluding(df, "department")
+        chart, param, dim = C.segment_department_drill(df_top, df_drilled, segments_sel, department_sel)
+        level_key = state.drill_chart_key(dim)
+        master_key = state.SEGMENTS_KEY if dim == "segment" else state.DEPARTMENT_KEY
+        ev = st.altair_chart(chart, on_select="rerun", key=level_key, use_container_width=True)
+        if state.handle_altair_select(ev, param, dim, master_key, level_key):
+            st.rerun()
 with row1_b:
-    card("Actual vs budget by segment", "Gap = variance · click a dot to filter")
-    chart, param = C.segment_dumbbell(state.apply_filters_excluding(df, "segments"), budget_df, segments_sel)
-    ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("dumbbell"), use_container_width=True)
-    if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("dumbbell")):
-        st.rerun()
+    with card("Actual vs budget by segment", "Gap = variance · click a dot to filter", owns="segments"):
+        chart, param = C.segment_dumbbell(state.apply_filters_excluding(df, "segments"), budget_df, segments_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("dumbbell"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("dumbbell")):
+            st.rerun()
 
-row2_a, row2_b = st.columns([1, 1.35])
+row2_a, row2_b = st.columns(2, gap="large")
 with row2_a:
-    card("Variance to budget by region", "Click a bar to filter that region")
-    chart, param = C.region_variance(state.apply_filters_excluding(df, "regions"), budget_df, regions_sel)
-    ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("variance"), use_container_width=True)
-    if state.handle_altair_select(ev, param, "region", state.REGIONS_KEY, state.chart_key("variance")):
-        st.rerun()
+    with card("Variance to budget by region", "Click a bar to filter that region", owns="regions"):
+        chart, param = C.region_variance(state.apply_filters_excluding(df, "regions"), budget_df, regions_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("variance"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "region", state.REGIONS_KEY, state.chart_key("variance")):
+            st.rerun()
 with row2_b:
-    card("Margin vs efficiency", "Bubble = operating income · click to filter segment")
-    chart, param = C.margin_scatter(state.apply_filters_excluding(df, "segments"), segments_sel)
-    ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("scatter"), use_container_width=True)
-    if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("scatter")):
-        st.rerun()
+    with card("Margin vs efficiency", "Bubble = operating income · click to filter segment", owns="segments"):
+        chart, param = C.margin_scatter(state.apply_filters_excluding(df, "segments"), segments_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("scatter"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("scatter")):
+            st.rerun()
 
-row3_a, row3_b = st.columns([1.15, 1])
+row3_a, row3_b = st.columns(2, gap="large")
 with row3_a:
-    card("Cash NPAT trend by segment", "Click a panel to filter that segment")
-    chart, param = C.trend_facets(state.dim_filtered_excluding(df, "segments"), segments_sel)
-    ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("facets"), use_container_width=True)
-    if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("facets")):
-        st.rerun()
+    with card("Cash NPAT trend by segment", "Click a panel to filter that segment", owns="segments"):
+        chart, param = C.trend_facets(state.dim_filtered_excluding(df, "segments"), segments_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("facets"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("facets")):
+            st.rerun()
 with row3_b:
-    card("Profitability bridge", "Operating income to Cash NPAT")
-    st.altair_chart(C.pnl_waterfall(filtered_df), use_container_width=True)
+    with card("Profitability bridge", "Operating income to Cash NPAT"):
+        st.altair_chart(C.pnl_waterfall(filtered_df), use_container_width=True)
 
 # ------------------------------------------------------- detail + export --
 with st.expander("Data & export", expanded=False):
-    pivot_dim = st.selectbox("Group by", ["segment", "region", "half"], format_func=str.title)
+    pivot_dim = st.selectbox("Group by", ["segment", "department", "region", "half"], format_func=str.title)
     pivot = (
         filtered_df.groupby(pivot_dim, as_index=False)
         .agg(operating_income=("operating_income", "sum"), cash_npat=("cash_npat", "sum"),

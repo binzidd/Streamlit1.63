@@ -49,6 +49,43 @@ SCENARIOS = ["Actual", "Budget"]
 ANNUAL_GROUP_OPERATING_INCOME = 27_000_000_000  # A$ illustrative
 TAX_RATE = 0.30
 
+# Department drill-down within each segment. Retail Banking Services and
+# Institutional Banking & Markets get a third department, at the user's
+# request; Business Banking and New Zealand keep two so every segment still
+# has a real drill-down rather than a single trivial child. Weights split
+# each segment's own totals (they sum to 1.0 within a segment) -- department
+# is a further split of an already-generated row, not an independent draw,
+# so summing a segment's departments always reconciles back to that
+# segment's total (see _split_by_department).
+DEPARTMENTS: dict[str, dict[str, float]] = {
+    "Retail Banking Services": {
+        "Home Loans": 0.50,
+        "Personal Banking": 0.32,
+        "Credit Cards & Payments": 0.18,
+    },
+    "Business Banking": {
+        "Commercial Banking": 0.62,
+        "Small Business": 0.38,
+    },
+    "Institutional Banking & Markets": {
+        "Corporate & Institutional Banking": 0.48,
+        "Markets & Treasury": 0.34,
+        "Advisory": 0.18,
+    },
+    "New Zealand (ASB)": {
+        "Retail Banking (NZ)": 0.68,
+        "Business Banking (NZ)": 0.32,
+    },
+}
+ALL_DEPARTMENTS = [d for depts in DEPARTMENTS.values() for d in depts]
+
+_FLOW_COLS = [
+    "operating_income", "operating_expenses", "loan_impairment_expense",
+    "net_interest_income", "other_operating_income", "cash_npat", "statutory_npat",
+    "avg_interest_earning_assets", "gross_loans", "deposits", "equity",
+]
+_COUNT_COLS = ["new_customers", "churned_customers"]
+
 
 def _seasonal(month: int) -> float:
     # mild seasonality: stronger in Mar/Jun (quarter-end), softer in Jan
@@ -67,6 +104,30 @@ def _fy_half(date: pd.Timestamp) -> tuple[str, str, str]:
     half_label = f"{half}{str(fy)[-2:]}"
     half_key = f"{fy}-{half}"
     return fy_label, half_label, half_key
+
+
+def _split_by_department(df: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
+    """Explode each segment-grain row into one row per department, splitting
+    the flow/stock/count columns by that department's weight (plus a touch
+    of independent noise for texture). Region/scenario/date are untouched,
+    so grouping the result by segment (summing departments back out) always
+    reconciles to the pre-split segment total."""
+    parts = []
+    for seg, depts in DEPARTMENTS.items():
+        seg_df = df[df["segment"] == seg]
+        for dept, weight in depts.items():
+            sub = seg_df.copy()
+            noise = rng.normal(1.0, 0.03, size=len(sub))
+            for col in _FLOW_COLS:
+                sub[col] = sub[col] * weight * noise
+            for col in _COUNT_COLS:
+                sub[col] = np.maximum((sub[col] * weight * noise).round().astype(int), 0)
+            sub["department"] = dept
+            parts.append(sub)
+    out = pd.concat(parts, ignore_index=True)
+    out["other_operating_income"] = out["other_operating_income"].clip(lower=0)
+    out["net_new_customers"] = out["new_customers"] - out["churned_customers"]
+    return out
 
 
 @st.cache_data(show_spinner=False)
@@ -153,7 +214,7 @@ def generate_dataset(seed: int = 42) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     df["net_new_customers"] = df["new_customers"] - df["churned_customers"]
-    return df
+    return _split_by_department(df, rng)
 
 
 @st.cache_data(show_spinner=False)
