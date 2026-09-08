@@ -114,40 +114,77 @@ def segment_department_drill(df_top: pd.DataFrame, df_drilled: pd.DataFrame, sel
         g = df_top.groupby("segment", as_index=False)[metric].sum().sort_values(metric, ascending=False)
         g["seg"] = g["segment"].map(SHORT)
         g["color"] = g["segment"].map(SERIES)
-        g["amount_label"] = g[metric].map(fmt_currency) + "   +"
+        g["value_label"] = g[metric].map(fmt_currency)
         order = g["seg"].tolist()
         click = alt.selection_point(fields=["segment"], name=param)
-        bars = alt.Chart(g).mark_bar(cornerRadiusEnd=3, height=24).encode(
-            y=alt.Y("seg:N", sort=order, title=None),
-            x=alt.X(f"{metric}:Q", title=None, axis=money_axis()),
-            color=alt.Color("color:N", scale=None, legend=None),
-            tooltip=[alt.Tooltip("segment:N", title="Segment"),
-                     alt.Tooltip(f"{metric}:Q", title=label, format="$,.0f")],
-        ).add_params(click)
-        labels = alt.Chart(g).mark_text(align="left", dx=6, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
-            y=alt.Y("seg:N", sort=order), x=alt.X(f"{metric}:Q"), text="amount_label:N",
-        )
-        return _base(bars + labels, 220), param, "segment"
+        return _table_and_bars(g, "seg", order, "segment", label, metric, click,
+                               color=alt.Color("color:N", scale=None, legend=None),
+                               tip_title="Segment", drill_marker=True), param, "segment"
 
     seg = selected_segments[0]
     g = df_drilled.groupby("department", as_index=False)[metric].sum().sort_values(metric, ascending=False)
     seg_color = SERIES.get(seg, ACCENT)
     g["emph"] = [seg_color if (not selected_departments or d in selected_departments) else MUTED
                 for d in g["department"]]
-    g["amount_label"] = g[metric].map(fmt_currency)
+    g["value_label"] = g[metric].map(fmt_currency)
     order = g["department"].tolist()
     click = alt.selection_point(fields=["department"], name=param)
+    return _table_and_bars(g, "department", order, "department", label, metric, click,
+                           color=alt.Color("emph:N", scale=None, legend=None),
+                           tip_title="Department", label_limit=220), param, "department"
+
+
+def _table_and_bars(g: pd.DataFrame, y_field: str, order: list[str], dim: str, label: str,
+                    metric: str, click: alt.Parameter, color: alt.Color, tip_title: str,
+                    drill_marker: bool = False, label_limit: int = 120) -> alt.Chart:
+    """Text-table column of values on the left, bars on the right.
+
+    The table column is drawn INSIDE the same plotting area rather than
+    hconcat-ed beside it: the x domain is extended into negative space to
+    reserve a gutter, and the value text sits at x=0 right-aligned against
+    the bar baseline. That keeps the whole thing one layered view, so the
+    click selection Streamlit reports is exactly the one that already works
+    -- an hconcat would put the bars in a sub-view and put that at risk.
+    Nothing reads the gutter as negative numbers because the value axis is
+    gone (the numbers ARE the axis now), and a rule at zero draws the
+    table's dividing line.
+    """
+    vmax = float(g[metric].max()) if len(g) else 1.0
+    gutter = vmax * 0.34
+    x_scale = alt.Scale(domain=[-gutter, vmax * 1.08], nice=False)
+    g = g.assign(_zero=0.0)
+
     bars = alt.Chart(g).mark_bar(cornerRadiusEnd=3, height=24).encode(
-        y=alt.Y("department:N", sort=order, title=None, axis=alt.Axis(labelLimit=220)),
-        x=alt.X(f"{metric}:Q", title=None, axis=money_axis()),
-        color=alt.Color("emph:N", scale=None, legend=None),
-        tooltip=[alt.Tooltip("department:N", title="Department"),
+        y=alt.Y(f"{y_field}:N", sort=order, title=None, axis=alt.Axis(labelLimit=label_limit)),
+        x=alt.X(f"{metric}:Q", title=None, axis=None, scale=x_scale),
+        color=color,
+        tooltip=[alt.Tooltip(f"{dim}:N", title=tip_title),
                  alt.Tooltip(f"{metric}:Q", title=label, format="$,.0f")],
     ).add_params(click)
-    labels = alt.Chart(g).mark_text(align="left", dx=6, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
-        y=alt.Y("department:N", sort=order), x=alt.X(f"{metric}:Q"), text="amount_label:N",
+    values = alt.Chart(g).mark_text(align="right", dx=-10, font=FONT, fontSize=11,
+                                    fontWeight=600, color=INK).encode(
+        y=alt.Y(f"{y_field}:N", sort=order),
+        x=alt.X("_zero:Q", scale=x_scale),
+        text="value_label:N",
     )
-    return _base(bars + labels, 220), param, "department"
+    divider = alt.Chart(g).mark_rule(stroke=GRID, strokeWidth=1).encode(
+        x=alt.X("_zero:Q", scale=x_scale),
+    )
+    # Bars first: Streamlit's selection bridge reads the param off the first
+    # layer, and putting the divider ahead of the bars crashed the Vega
+    # component outright ("Cannot read properties of undefined").
+    layers = [bars, divider, values]
+    if drill_marker:
+        # "+" sits at the end of each bar as the drill-down affordance.
+        layers.append(
+            alt.Chart(g).mark_text(align="left", dx=7, font=FONT, fontSize=12,
+                                   fontWeight=600, color=INK_SECONDARY).encode(
+                y=alt.Y(f"{y_field}:N", sort=order),
+                x=alt.X(f"{metric}:Q", scale=x_scale),
+                text=alt.value("+"),
+            )
+        )
+    return _base(alt.layer(*layers), 220)
 
 
 def segment_dumbbell(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[str],
@@ -172,7 +209,7 @@ def segment_dumbbell(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[s
 
     rule = alt.Chart(g).mark_rule(stroke=MUTED, strokeWidth=3).encode(
         y=alt.Y("seg:N", sort=order, title=None),
-        x=alt.X("budget:Q", title=None, axis=money_axis(), scale=x_scale),
+        x=alt.X("budget:Q", title=None, axis=None, scale=x_scale),
         x2="actual:Q",
     )
     budget_pt = alt.Chart(g).mark_point(filled=True, size=90, shape="diamond", stroke="white", strokeWidth=1.5).encode(
@@ -397,15 +434,31 @@ def pnl_waterfall(df: pd.DataFrame) -> alt.Chart:
 
 
 def sparkline(series: pd.Series, positive: bool = True) -> alt.Chart:
-    """Tiny trend for a KPI stat tile -- no axes, no legend, shape only."""
+    """Trend for a KPI stat tile -- no axes, no legend, shape only.
+
+    The domain is set explicitly from the data rather than left to
+    `zero=False`: an area mark carries an implicit y2 at the zero baseline,
+    which drags 0 back into the domain whatever `zero` says, and that's what
+    was squashing every one of these into a flat line across the top of a
+    solid block. Pinning the domain to the series' own range spends the
+    tile's full height on the part that varies, which is the only reason
+    the tile carries a chart at all.
+    """
+    values = pd.Series(series.values, dtype="float64").dropna()
     g = pd.DataFrame({"date": series.index, "value": series.values})
+    if len(values):
+        lo, hi = float(values.min()), float(values.max())
+        pad = (hi - lo) * 0.12 or (abs(hi) * 0.02 or 1.0)
+        y_scale = alt.Scale(domain=[lo - pad, hi + pad], nice=False)
+    else:
+        y_scale = alt.Scale(nice=False)
     return (
         alt.Chart(g)
         .mark_area(line={"strokeWidth": 1.5, "color": ACCENT}, color=ACCENT, opacity=0.15, interpolate="monotone", clip=True)
         .encode(
             x=alt.X("date:T", axis=None),
-            y=alt.Y("value:Q", axis=None, scale=alt.Scale(zero=False)),
+            y=alt.Y("value:Q", axis=None, scale=y_scale),
         )
-        .properties(height=38)
+        .properties(height=74)
         .configure_view(stroke=None)
     )
