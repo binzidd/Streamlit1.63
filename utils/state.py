@@ -366,6 +366,15 @@ def clear_chart_selections() -> None:
     st.session_state[CHART_GEN_KEY] = st.session_state.get(CHART_GEN_KEY, 0) + 1
 
 
+def drill_up() -> None:
+    """Clear the segment (and the department drilled into it) -- the drill
+    chart's own "− back to segments" affordance, same effect as clearing the
+    Segment chip."""
+    _set_master(SEGMENTS_KEY, [])
+    _set_master(DEPARTMENT_KEY, [])
+    clear_chart_selections()
+
+
 def reset_filters(default_start: dt.date, default_end: dt.date) -> None:
     _set_master(DATE_KEY, (default_start, default_end))
     _set_master(SEGMENTS_KEY, [])
