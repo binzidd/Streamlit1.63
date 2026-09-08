@@ -2,7 +2,9 @@
 
 A demo built on **Streamlit 1.63.0** to exercise its newer interactivity
 primitives: chart/table selection events (`on_select`), `st.segmented_control`,
-bordered containers, and `column_config` formatting.
+bordered containers (used for both KPI tiles and the `tile()` chart-card
+chrome), `st.query_params` for shareable URL state, and `column_config`
+formatting.
 
 > **Illustrative data only.** The dataset is randomly generated (seeded, so
 > it's reproducible) in the shape of a diversified bank's earnings — Retail
@@ -22,21 +24,34 @@ digging offline:
   selection. A dropdown filter strip does the same thing for people who'd
   rather type. There is one shared filter state; clicking and choosing from
   a dropdown are equivalent.
-  > **Known limitation:** the segment and region bar charts are read-only
-  > displays, not click-to-filter, in this build. Streamlit 1.63's
-  > `st.plotly_chart(on_select="rerun")` bridge silently stops forwarding a
-  > widget's click events to Python once its own click handler has written
-  > back to that widget's bound session_state key across a rerun — reliably
-  > reproducible here, isolated down to the `st.rerun()` boundary itself,
-  > but not fully root-caused. The period chart and the data-table row
-  > selection use the same `on_select` mechanism and are unaffected, so the
-  > dropdowns remain the reliable way to filter by segment/region.
+  > **Known limitation:** the segment and region bar charts (and the
+  > Sankey/waterfall/treemap) are read-only displays, not click-to-filter,
+  > in this build. Streamlit 1.63's `st.plotly_chart(on_select="rerun")`
+  > bridge never reports a selection for their bar trace — confirmed by
+  > exhaustively testing customdata, `tickvals`/`ticktext` label
+  > substitution, `tickangle`, `hovertemplate`, single- vs. multi-trace
+  > (legend presence), script position (first/middle/last on the page,
+  > alone or combined with other charts), and the state-comparison style,
+  > none of which changed the outcome. The period chart (`half_trend_bar`)
+  > and data-table row selection use the identical `on_select` mechanism and
+  > are reliable for a click-then-observe interaction, so the dropdowns
+  > remain how you filter by segment/region — the charts still highlight
+  > whichever segments/regions are selected via the dropdown, they just
+  > don't emit clicks themselves. One further quirk: a table selection can
+  > silently clear itself if you switch views right after making it (the
+  > `st.dataframe` widget being unmounted appears to fire a stray empty
+  > selection event) — reselect after switching views if that happens.
 - **Click again to clear.** Selections toggle off, and active filters show
   as removable pills under the filter strip so it's always obvious why the
   numbers moved.
-- **KPI tiles lead with the number**, not the chart — big value, a
-  vs-prior-period delta in a supporting sentence, a sparkline for shape,
-  in that order.
+- **KPI tiles lead with the number**, not the chart — big value, a delta in
+  a supporting sentence, a sparkline for shape, in that order. A "Compare
+  To" dropdown (Prior Period / Budget) next to the filter strip controls
+  what that delta is measured against, for every tile at once.
+- **The URL is the view.** Every filter — period, segments, regions,
+  scenario, compare-to, even a clicked half-year — round-trips through
+  `st.query_params`, so a filtered/drilled-down view can be copied and
+  shared, and reloading the link restores it exactly.
 - **An Excel escape hatch.** The Data & Export view exports exactly what's
   on screen (respecting all active filters) as a formatted `.xlsx`
   workbook — currency number formats, a frozen header, autofilter — not a
@@ -51,7 +66,8 @@ utils/state.py          single source of truth for cross-tile filter state
 utils/formatting.py      currency/%/delta formatting helpers
 utils/export.py          formatted Excel workbook builder
 components/kpi_tiles.py  KPI tile row (value, delta, sparkline, drill button)
-components/charts.py     Plotly figure builders wired for on_select events
+components/charts.py     Plotly figure builders (half_trend_bar wired for on_select; see its module docstring for the rest)
+components/tile.py       bordered-card + icon/title chrome wrapping every chart
 .streamlit/config.toml   light corporate theme
 ```
 
@@ -71,7 +87,10 @@ streamlit run app.py
   and Cash NPAT (also display-only — Plotly Sankey nodes don't emit
   box/lasso selection events for `on_select` to pick up).
 - **Profitability** — Net Interest Margin and Cost-to-Income trend lines,
-  operating income vs. expenses, loan impairment expense by half.
+  operating income vs. expenses, a P&L waterfall bridging Operating Income
+  down to Cash NPAT (Opex, Loan Impairment, Tax as the bridge steps — the
+  same reconciling numbers as the Overview Sankey, as a bridge instead of
+  a flow diagram), and loan impairment expense by half.
 - **Balance Sheet** — deposits vs. gross loans over time, gross loans by
   segment, deposits by region.
 - **Segments** — a treemap of Cash NPAT by segment/region, plus a
