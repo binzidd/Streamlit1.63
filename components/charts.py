@@ -152,6 +152,61 @@ def stacked_balance_area(df: pd.DataFrame) -> go.Figure:
     return _apply_theme(fig, height=320, title="Deposits vs. gross loans")
 
 
+def income_statement_sankey(df: pd.DataFrame) -> go.Figure:
+    # Display-only, like segment_bar/region_bar: Sankey nodes don't emit
+    # box/lasso selection events through st.plotly_chart(on_select="rerun"),
+    # so there's nothing to wire up here.
+    df = df.copy()
+    short_labels = {
+        "Retail Banking Services": "Retail Banking",
+        "Business Banking": "Business Banking",
+        "Institutional Banking & Markets": "IB&M",
+        "New Zealand (ASB)": "New Zealand",
+    }
+    seg_totals = (
+        df.groupby("segment", as_index=False)["operating_income"]
+        .sum()
+        .sort_values("operating_income", ascending=False)
+    )
+    seg_totals = seg_totals[seg_totals["operating_income"] > 0]
+
+    total_opex = df["operating_expenses"].sum()
+    total_impair = df["loan_impairment_expense"].sum()
+    total_cash_npat = df["cash_npat"].sum()
+    total_income = seg_totals["operating_income"].sum()
+    total_tax = max(total_income - total_opex - total_impair - total_cash_npat, 0)
+
+    seg_labels = [short_labels.get(s, s) for s in seg_totals["segment"]]
+    hub_idx = len(seg_labels)
+    outflow_labels = ["Operating Expenses", "Loan Impairment", "Tax", "Cash NPAT"]
+    labels = seg_labels + ["Operating Income"] + outflow_labels
+
+    seg_colors = [SEGMENT_COLORS.get(s, NAVY) for s in seg_totals["segment"]]
+    outflow_colors = [RED, "#B5651D", MUTED, GREEN]
+    node_colors = seg_colors + [NAVY] + outflow_colors
+
+    sources = list(range(len(seg_labels))) + [hub_idx] * 4
+    targets = [hub_idx] * len(seg_labels) + [hub_idx + 1, hub_idx + 2, hub_idx + 3, hub_idx + 4]
+    values = seg_totals["operating_income"].tolist() + [total_opex, total_impair, total_tax, total_cash_npat]
+
+    def _to_rgba(hex_color: str, alpha: float = 0.35) -> str:
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+
+    link_colors = [_to_rgba(c) for c in seg_colors] + [_to_rgba(c) for c in outflow_colors]
+
+    fig = go.Figure(
+        go.Sankey(
+            arrangement="snap",
+            node=dict(label=labels, color=node_colors, pad=18, thickness=16, line=dict(color="white", width=0.5)),
+            link=dict(source=sources, target=targets, value=values, color=link_colors),
+        )
+    )
+    fig.update_traces(valueformat=",.0f", valuesuffix=" A$")
+    return _apply_theme(fig, height=380, title="Income statement flow — segment income to profit")
+
+
 def segment_region_treemap(df: pd.DataFrame) -> go.Figure:
     df = df.copy()  # see segment_bar's comment on df.copy()
     g = df.groupby(["segment", "region"], as_index=False)["cash_npat"].sum()
