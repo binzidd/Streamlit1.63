@@ -1,0 +1,354 @@
+"""Altair chart builders for the single-page dashboard.
+
+Native Altair (rendered by st.altair_chart) rather than Plotly, for two
+reasons: Streamlit's `on_select="rerun"` bridge actually reports selections
+for Altair's `selection_point` params -- the Plotly bridge never did for a
+bar trace in this build -- so EVERY chart here is click-to-filter; and it
+keeps the chart layer on Streamlit's own native rendering path.
+
+Each builder returns (chart, param_name). The caller renders it with
+st.altair_chart(chart, on_select="rerun", key=...) and passes param_name to
+state.handle_altair_select() to turn a click into a page-wide filter.
+
+Palette: the dataviz skill's validated categorical slots (blue/orange/aqua/
+yellow) -- validated on this app's white surface: all gates pass, with aqua
+and yellow under 3:1 contrast, which is why the categorical bar forms carry
+visible direct labels (the skill's "relief rule").
+"""
+from __future__ import annotations
+
+import altair as alt
+import pandas as pd
+
+from utils.formatting import fmt_currency
+
+# Categorical slots 1-4 (dataviz validated order). Fixed per entity, never
+# re-assigned by rank -- so a filter that drops series never repaints the
+# survivors.
+SERIES = {
+    "Retail Banking Services": "#2a78d6",
+    "Business Banking": "#eb6834",
+    "Institutional Banking & Markets": "#1baf7a",
+    "New Zealand (ASB)": "#eda100",
+}
+SEGMENT_ORDER = list(SERIES)
+
+SHORT = {
+    "Retail Banking Services": "Retail",
+    "Business Banking": "Business",
+    "Institutional Banking & Markets": "IB&M",
+    "New Zealand (ASB)": "New Zealand",
+}
+
+# Sequential ramp (single hue, light->dark) for magnitude encodings.
+SEQUENTIAL = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#2a78d6", "#1c5cab", "#104281"]
+
+# Diverging pair for variance-to-budget (blue <-> red, neutral gray midpoint).
+DIVERGING = ["#0d366b", "#2a78d6", "#9ec5f4", "#f0efec", "#f2b3b2", "#e34948", "#8c1f1e"]
+
+ACCENT = "#2a78d6"
+MUTED = "#d7dee6"
+INK = "#0b0b0b"
+INK_SECONDARY = "#52514e"
+AXIS = "#898781"
+GRID = "#e1e0d9"
+
+FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
+
+# d3's SI prefix renders 1e9 as "G"; finance reads "B". These Vega
+# expressions relabel the axis/legend ticks without touching the values.
+MONEY_LABEL = "replace(format(datum.value, '$,.2s'), 'G', 'B')"
+MONEY_LABEL_SIGNED = "replace(format(datum.value, '+$,.2s'), 'G', 'B')"
+
+
+def money_axis(**kwargs) -> alt.Axis:
+    return alt.Axis(labelExpr=MONEY_LABEL, **kwargs)
+
+
+def _base(chart: alt.Chart, height: int) -> alt.Chart:
+    return chart.properties(height=height).configure_view(stroke=None).configure_axis(
+        labelFont=FONT,
+        labelColor=AXIS,
+        labelFontSize=10,
+        titleFont=FONT,
+        titleColor=INK_SECONDARY,
+        titleFontSize=11,
+        gridColor=GRID,
+        domainColor=GRID,
+        tickColor=GRID,
+    ).configure_legend(
+        labelFont=FONT, labelColor=INK_SECONDARY, labelFontSize=11,
+        titleFont=FONT, titleColor=INK_SECONDARY, titleFontSize=11,
+        orient="top", direction="horizontal", offset=4,
+    )
+
+
+def _emphasis(values: list[str], selected: list[str], colors: dict[str, str] | None = None) -> list[str]:
+    """Emphasis colouring: when something is selected, everything else goes
+    to the de-emphasis gray. With nothing selected every mark keeps its own
+    identity colour."""
+    if colors:
+        return [colors.get(v, ACCENT) if (not selected or v in selected) else MUTED for v in values]
+    return [ACCENT if (not selected or v in selected) else MUTED for v in values]
+
+
+def segment_heatmap(df: pd.DataFrame, selected: list[str], metric: str = "operating_income") -> tuple[alt.Chart, str]:
+    """Month x segment magnitude grid -- sequential single hue. A grid of
+    magnitudes is the heatmap's job; it also carries far more data per pixel
+    than the stack of bar charts it replaces."""
+    df = df.copy()
+    df["month_sort"] = df["date"]
+    df["month_label"] = df["date"].dt.strftime("%b %y")
+    g = df.groupby(["month_label", "month_sort", "segment"], as_index=False)[metric].sum()
+    g["seg"] = g["segment"].map(SHORT)
+    # Emphasis dimming precomputed in pandas rather than alt.condition: the
+    # predicate form needs a real predicate, and "nothing selected" has none.
+    g["emph"] = [1.0 if (not selected or s in selected) else 0.25 for s in g["segment"]]
+    param = "heat_click"
+    click = alt.selection_point(fields=["segment"], name=param)
+
+    chart = (
+        alt.Chart(g)
+        .mark_rect(stroke="white", strokeWidth=2, cornerRadius=2)
+        .encode(
+            x=alt.X("month_label:N", sort=alt.SortField("month_sort"), title=None,
+                    axis=alt.Axis(labelAngle=0, labelOverlap=True)),
+            # labelOverlap=False: Vega drops band labels it thinks collide,
+            # which silently leaves rows unlabelled at this row height.
+            y=alt.Y("seg:N", sort=[SHORT[s] for s in SEGMENT_ORDER], title=None,
+                    axis=alt.Axis(labelOverlap=False, labelPadding=6)),
+            color=alt.Color(f"{metric}:Q", title=None,
+                            scale=alt.Scale(range=SEQUENTIAL),
+                            legend=alt.Legend(labelExpr=MONEY_LABEL, gradientLength=110)),
+            opacity=alt.Opacity("emph:Q", scale=None, legend=None),
+            tooltip=[alt.Tooltip("segment:N", title="Segment"),
+                     alt.Tooltip("month_label:N", title="Month"),
+                     alt.Tooltip(f"{metric}:Q", title="Operating Income", format="$,.0f")],
+        )
+        .add_params(click)
+    )
+    return _base(chart, 168), param
+
+
+def segment_dumbbell(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[str],
+                     metric: str = "operating_income") -> tuple[alt.Chart, str]:
+    """Actual vs Budget per segment -- the dumbbell is the "before -> after
+    per item" form: one row per segment, the gap IS the variance, which two
+    side-by-side bars make you compute by eye."""
+    actual = df.groupby("segment", as_index=False)[metric].sum().rename(columns={metric: "actual"})
+    budget = budget_df.groupby("segment", as_index=False)[metric].sum().rename(columns={metric: "budget"})
+    g = actual.merge(budget, on="segment", how="outer").fillna(0.0)
+    g["seg"] = g["segment"].map(SHORT)
+    g["variance"] = g["actual"] - g["budget"]
+    g["emph"] = _emphasis(g["segment"].tolist(), selected, SERIES)
+
+    param = "dumb_click"
+    click = alt.selection_point(fields=["segment"], name=param)
+    order = [SHORT[s] for s in SEGMENT_ORDER]
+
+    # Headroom on the right so the variance labels aren't clipped.
+    x_max = float(max(g["actual"].max(), g["budget"].max())) * 1.28
+    x_scale = alt.Scale(domain=[0, x_max], nice=False)
+
+    rule = alt.Chart(g).mark_rule(stroke=MUTED, strokeWidth=3).encode(
+        y=alt.Y("seg:N", sort=order, title=None),
+        x=alt.X("budget:Q", title=None, axis=money_axis(), scale=x_scale),
+        x2="actual:Q",
+    )
+    budget_pt = alt.Chart(g).mark_point(filled=True, size=90, shape="diamond", stroke="white", strokeWidth=1.5).encode(
+        y=alt.Y("seg:N", sort=order, title=None),
+        x=alt.X("budget:Q", scale=x_scale),
+        color=alt.value(AXIS),
+        tooltip=[alt.Tooltip("segment:N", title="Segment"), alt.Tooltip("budget:Q", title="Budget", format="$,.0f")],
+    )
+    actual_pt = alt.Chart(g).mark_point(filled=True, size=150, stroke="white", strokeWidth=1.5).encode(
+        y=alt.Y("seg:N", sort=order, title=None),
+        x=alt.X("actual:Q", scale=x_scale),
+        color=alt.Color("emph:N", scale=None, legend=None),
+        tooltip=[alt.Tooltip("segment:N", title="Segment"),
+                 alt.Tooltip("actual:Q", title="Actual", format="$,.0f"),
+                 alt.Tooltip("variance:Q", title="vs Budget", format="+$,.0f")],
+    ).add_params(click)
+    g["variance_label"] = [("+" if v >= 0 else "−") + fmt_currency(abs(v)) for v in g["variance"]]
+    label = alt.Chart(g).mark_text(align="left", dx=10, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
+        y=alt.Y("seg:N", sort=order, title=None),
+        x=alt.X("actual:Q", scale=x_scale),
+        text=alt.Text("variance_label:N"),
+    )
+    return _base(rule + budget_pt + actual_pt + label, 150), param
+
+
+def region_variance(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[str],
+                    metric: str = "operating_income") -> tuple[alt.Chart, str]:
+    """Variance to budget by region -- a diverging bar centred on zero, so
+    above/below budget reads as direction, not as two similar bar heights."""
+    actual = df.groupby("region", as_index=False)[metric].sum().rename(columns={metric: "actual"})
+    budget = budget_df.groupby("region", as_index=False)[metric].sum().rename(columns={metric: "budget"})
+    g = actual.merge(budget, on="region", how="outer").fillna(0.0)
+    g["variance"] = g["actual"] - g["budget"]
+    g["pct"] = (g["variance"] / g["budget"].replace(0, pd.NA)).fillna(0.0)
+    g = g.sort_values("variance")
+    g["emph"] = [1.0 if (not selected or r in selected) else 0.3 for r in g["region"]]
+
+    param = "var_click"
+    click = alt.selection_point(fields=["region"], name=param)
+
+    bars = (
+        alt.Chart(g)
+        .mark_bar(cornerRadiusEnd=3, height=14)
+        .encode(
+            y=alt.Y("region:N", sort=g["region"].tolist(), title=None),
+            x=alt.X("variance:Q", title=None, axis=alt.Axis(labelExpr=MONEY_LABEL_SIGNED)),
+            color=alt.Color("variance:Q", scale=alt.Scale(range=DIVERGING, domainMid=0), legend=None),
+            opacity=alt.Opacity("emph:Q", scale=None, legend=None),
+            tooltip=[alt.Tooltip("region:N", title="Region"),
+                     alt.Tooltip("actual:Q", title="Actual", format="$,.0f"),
+                     alt.Tooltip("budget:Q", title="Budget", format="$,.0f"),
+                     alt.Tooltip("pct:Q", title="vs Budget", format="+.1%")],
+        )
+        .add_params(click)
+    )
+    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(stroke=AXIS, strokeWidth=1).encode(x="x:Q")
+    return _base(bars + zero, 170), param
+
+
+def margin_scatter(df: pd.DataFrame, selected: list[str]) -> tuple[alt.Chart, str]:
+    """Net Interest Margin vs Cost-to-Income, bubble sized by income.
+
+    Emphasis colouring rather than 4 categorical hues: this is an all-pairs
+    form (every bubble sits beside every other), where the validated palette
+    caps categorical identity at three slots. One accent + gray keeps it
+    readable and puts the selected segment forward."""
+    # NIM is a monthly rate annualised, so it has to be computed per month
+    # and then averaged -- annualising a multi-month SUM of NII would
+    # overstate it by the number of months in the window.
+    monthly = df.groupby(["segment", "date"]).agg(
+        nii=("net_interest_income", "sum"),
+        assets=("avg_interest_earning_assets", "mean"),
+    ).reset_index()
+    monthly["nim"] = monthly["nii"] * 12 / monthly["assets"] * 100
+    g = df.groupby("segment").agg(
+        opex=("operating_expenses", "sum"),
+        income=("operating_income", "sum"),
+    ).reset_index()
+    g = g.merge(monthly.groupby("segment", as_index=False)["nim"].mean(), on="segment")
+    g["cti"] = (g["opex"] / g["income"]) * 100
+    g["seg"] = g["segment"].map(SHORT)
+    g["emph"] = _emphasis(g["segment"].tolist(), selected)
+
+    param = "scatter_click"
+    click = alt.selection_point(fields=["segment"], name=param)
+
+    pts = (
+        alt.Chart(g)
+        .mark_circle(stroke="white", strokeWidth=1.5, opacity=1)
+        .encode(
+            x=alt.X("cti:Q", title="Cost-to-income %", scale=alt.Scale(zero=False, nice=True)),
+            y=alt.Y("nim:Q", title="Net interest margin %", scale=alt.Scale(zero=False, nice=True)),
+            size=alt.Size("income:Q", scale=alt.Scale(range=[200, 1400]), legend=None),
+            color=alt.Color("emph:N", scale=None, legend=None),
+            tooltip=[alt.Tooltip("segment:N", title="Segment"),
+                     alt.Tooltip("nim:Q", title="NIM %", format=".2f"),
+                     alt.Tooltip("cti:Q", title="CTI %", format=".1f"),
+                     alt.Tooltip("income:Q", title="Operating Income", format="$,.0f")],
+        )
+        .add_params(click)
+    )
+    labels = alt.Chart(g).mark_text(dy=-18, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
+        x="cti:Q", y="nim:Q", text="seg:N",
+    )
+    return _base(pts + labels, 210), param
+
+
+def trend_facets(df: pd.DataFrame, selected: list[str], metric: str = "cash_npat") -> tuple[alt.Chart, str]:
+    """Small multiples: one mini trend per segment. Faceting is the honest
+    answer to four series on one all-pairs plot -- four overlaid lines would
+    need four categorical hues telling apart at every crossing point."""
+    g = df.groupby(["date", "segment"], as_index=False)[metric].sum()
+    g["seg"] = g["segment"].map(SHORT)
+    g["emph"] = _emphasis(g["segment"].tolist(), selected, SERIES)
+
+    param = "facet_click"
+    click = alt.selection_point(fields=["segment"], name=param)
+
+    chart = (
+        alt.Chart(g)
+        .mark_area(line={"strokeWidth": 2}, opacity=0.18, interpolate="monotone")
+        .encode(
+            x=alt.X("date:T", title=None, axis=alt.Axis(format="%b %y", labelOverlap=True, tickCount=3)),
+            y=alt.Y(f"{metric}:Q", title=None, axis=alt.Axis(labelExpr=MONEY_LABEL, tickCount=3)),
+            color=alt.Color("emph:N", scale=None, legend=None),
+            tooltip=[alt.Tooltip("segment:N", title="Segment"),
+                     alt.Tooltip("date:T", title="Month", format="%b %Y"),
+                     alt.Tooltip(f"{metric}:Q", title="Cash NPAT", format="$,.0f")],
+        )
+        .add_params(click)
+        .properties(width=150, height=95)
+        .facet(facet=alt.Facet("seg:N", title=None, sort=[SHORT[s] for s in SEGMENT_ORDER],
+                               header=alt.Header(labelFont=FONT, labelFontSize=11, labelColor=INK_SECONDARY)),
+               columns=4)
+    )
+    # .facet() returns a FacetChart; configure_* must be applied at this level.
+    return chart.configure_view(stroke=None).configure_axis(
+        labelFont=FONT, labelColor=AXIS, labelFontSize=9,
+        gridColor=GRID, domainColor=GRID, tickColor=GRID,
+    ), param
+
+
+def pnl_waterfall(df: pd.DataFrame) -> alt.Chart:
+    """P&L bridge, Operating Income down to Cash NPAT. Display-only: the
+    bars are stages of one reconciliation, not a dimension to filter by."""
+    income = df["operating_income"].sum()
+    opex = df["operating_expenses"].sum()
+    impair = df["loan_impairment_expense"].sum()
+    cash_npat = df["cash_npat"].sum()
+    pretax = income - opex - impair
+    tax = max(pretax - cash_npat, 0)
+
+    steps = [
+        ("Operating Income", 0.0, income, "total"),
+        ("Opex", income - opex, income, "down"),
+        ("Loan Impairment", pretax, income - opex, "down"),
+        ("Pre-Tax Profit", 0.0, pretax, "total"),
+        ("Tax", cash_npat, pretax, "down"),
+        ("Cash NPAT", 0.0, cash_npat, "total"),
+    ]
+    g = pd.DataFrame(steps, columns=["stage", "low", "high", "kind"])
+    g["amount"] = [income, -opex, -impair, pretax, -tax, cash_npat]
+    g["color"] = g["kind"].map({"total": ACCENT, "down": "#e34948"})
+    g["amount_label"] = [
+        fmt_currency(a) if k == "total" else ("+" if a >= 0 else "−") + fmt_currency(abs(a))
+        for a, k in zip(g["amount"], g["kind"])
+    ]
+
+    # Headroom so the value label above the tallest bar isn't clipped.
+    y_max = float(max(income, pretax, cash_npat)) * 1.12
+
+    bars = alt.Chart(g).mark_bar(cornerRadius=3, size=34).encode(
+        x=alt.X("stage:N", sort=g["stage"].tolist(), title=None, axis=alt.Axis(labelAngle=0, labelLimit=90)),
+        y=alt.Y("low:Q", title=None, axis=money_axis(), scale=alt.Scale(domain=[0, y_max], nice=False)),
+        y2="high:Q",
+        color=alt.Color("color:N", scale=None, legend=None),
+        tooltip=[alt.Tooltip("stage:N", title="Stage"), alt.Tooltip("amount:Q", title="Amount", format="+$,.0f")],
+    )
+    labels = alt.Chart(g).mark_text(dy=-8, font=FONT, fontSize=10, color=INK_SECONDARY, baseline="bottom").encode(
+        x=alt.X("stage:N", sort=g["stage"].tolist()),
+        y=alt.Y("high:Q"),
+        text=alt.Text("amount_label:N"),
+    )
+    return _base(bars + labels, 210)
+
+
+def sparkline(series: pd.Series, positive: bool = True) -> alt.Chart:
+    """Tiny trend for a KPI stat tile -- no axes, no legend, shape only."""
+    g = pd.DataFrame({"date": series.index, "value": series.values})
+    return (
+        alt.Chart(g)
+        .mark_area(line={"strokeWidth": 1.5, "color": ACCENT}, color=ACCENT, opacity=0.15, interpolate="monotone")
+        .encode(
+            x=alt.X("date:T", axis=None),
+            y=alt.Y("value:Q", axis=None, scale=alt.Scale(zero=False)),
+        )
+        .properties(height=38)
+        .configure_view(stroke=None)
+    )
