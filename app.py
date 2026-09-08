@@ -21,7 +21,7 @@ from components import charts_alt as C
 from components.kpi_tiles import render_kpi_row
 from data.generate import generate_dataset
 from utils import state
-from utils.export import build_excel_bytes
+from utils.export import build_csv_bytes, build_excel_bytes
 
 st.set_page_config(page_title="Pulse — Bank Earnings", page_icon="🏦", layout="wide")
 
@@ -183,12 +183,22 @@ with st.expander("Data & export", expanded=False):
             "gross_loans": st.column_config.NumberColumn("Gross Loans", format="A$%.0f"),
         },
     )
-    st.download_button(
-        "⬇ Download filtered view as Excel",
-        data=build_excel_bytes(filtered_df),
-        file_name="pulse_filtered_export.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    excel_bytes = build_excel_bytes(filtered_df)
+    if excel_bytes is not None:
+        st.download_button(
+            "⬇ Download filtered view as Excel",
+            data=excel_bytes,
+            file_name="pulse_filtered_export.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    else:
+        st.download_button(
+            "⬇ Download filtered view as CSV",
+            data=build_csv_bytes(filtered_df),
+            file_name="pulse_filtered_export.csv",
+            mime="text/csv",
+        )
+        st.caption("Install `XlsxWriter` for the formatted Excel workbook — falling back to CSV.")
 
 st.markdown(
     '<div class="pulse-sub">Synthetic data generated for a Streamlit 1.63 feature demo '
