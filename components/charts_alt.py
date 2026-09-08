@@ -326,7 +326,11 @@ def trend_facets(df: pd.DataFrame, selected: list[str], metric: str = "cash_npat
 
     chart = (
         alt.Chart(g)
-        .mark_area(line={"strokeWidth": 2}, opacity=0.18, interpolate="monotone", clip=True)
+        .mark_area(
+            line={"strokeWidth": 2},
+            point=alt.OverlayMarkDef(size=45, filled=True, opacity=1, stroke="white", strokeWidth=1),
+            opacity=0.18, interpolate="monotone", clip=True,
+        )
         .encode(
             x=alt.X("date:T", title=None, axis=alt.Axis(format="%b %y", labelOverlap=True, tickCount=3)),
             y=alt.Y(f"{metric}:Q", title=None, axis=alt.Axis(labelExpr=MONEY_LABEL, tickCount=3)),
