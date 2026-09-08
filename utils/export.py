@@ -19,6 +19,7 @@ DISPLAY_COLUMNS = {
     "fy": "FY",
     "half": "Half",
     "segment": "Segment",
+    "department": "Department",
     "region": "Region",
     "scenario": "Scenario",
     "operating_income": "Operating Income",

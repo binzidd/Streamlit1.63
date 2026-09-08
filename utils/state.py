@@ -20,9 +20,12 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
+from data.generate import ALL_DEPARTMENTS, DEPARTMENTS
+
 DATE_KEY = "f_date_range"
 SEGMENTS_KEY = "f_segments"
 REGIONS_KEY = "f_regions"
+DEPARTMENT_KEY = "f_department"
 SCENARIO_KEY = "f_scenario"
 COMPARE_KEY = "f_compare"
 
@@ -44,13 +47,31 @@ COMPARE_OPTIONS = ["Prior Period", "Budget"]
 # Streamlit reuses the DOM element for the same key, and the Vega view (and
 # its selection) survives. Changing the key is what actually remounts it, so
 # chart keys carry a generation counter that clearing bumps.
-CHART_KEYS = ("heatmap", "dumbbell", "variance", "scatter", "facets")
+CHART_KEYS = ("dumbbell", "variance", "scatter", "facets")
 CHART_GEN_KEY = "_chart_generation"
 
 
 def chart_key(name: str) -> str:
     """Widget key for a selection-emitting chart, for the current generation."""
     return f"{name}_{st.session_state.get(CHART_GEN_KEY, 0)}"
+
+
+DRILL_LEVELS = ("segment", "department")
+
+
+def drill_chart_key(level: str) -> str:
+    """Widget key for the segment/department drill-down chart. `level`
+    ("segment" or "department") is baked directly into the key, not just the
+    shared generation counter -- drilling in/out changes what the chart's
+    marks even ARE (segment bars vs. department bars), and a chart that
+    reshapes while its own selection is live is exactly the case
+    CHART_KEYS's docstring above describes: same key, different marks, and
+    the remount silently wipes the very selection that triggered it. Baking
+    the level into the key means a level change is always a genuine remount,
+    with no reliance on the generation counter being bumped at the right
+    moment."""
+    return f"drill_{level}_{st.session_state.get(CHART_GEN_KEY, 0)}"
+
 
 ALL_SEGMENTS = [
     "Retail Banking Services",
@@ -69,6 +90,7 @@ def init_state(default_start: dt.date, default_end: dt.date, data_min: dt.date |
     st.session_state.setdefault(DATE_KEY, (default_start, default_end))
     st.session_state.setdefault(SEGMENTS_KEY, [])
     st.session_state.setdefault(REGIONS_KEY, [])
+    st.session_state.setdefault(DEPARTMENT_KEY, [])
     st.session_state.setdefault(SCENARIO_KEY, "Actual")
     st.session_state.setdefault(COMPARE_KEY, "Prior Period")
     for widget_key in WIDGET_KEYS.values():
@@ -112,6 +134,8 @@ def _bootstrap_from_url(data_min: dt.date, data_max: dt.date) -> None:
         st.session_state[SEGMENTS_KEY] = [s for s in _decode_list(qp["segments"]) if s in ALL_SEGMENTS]
     if "regions" in qp:
         st.session_state[REGIONS_KEY] = [r for r in _decode_list(qp["regions"]) if r in ALL_REGIONS]
+    if "department" in qp:
+        st.session_state[DEPARTMENT_KEY] = [d for d in _decode_list(qp["department"]) if d in ALL_DEPARTMENTS]
     if qp.get("scenario") in ("Actual", "Budget"):
         st.session_state[SCENARIO_KEY] = qp["scenario"]
     if qp.get("compare") in COMPARE_OPTIONS:
@@ -133,6 +157,10 @@ def sync_url() -> None:
         qp["regions"] = _encode_list(st.session_state[REGIONS_KEY])
     elif "regions" in qp:
         del qp["regions"]
+    if st.session_state[DEPARTMENT_KEY]:
+        qp["department"] = _encode_list(st.session_state[DEPARTMENT_KEY])
+    elif "department" in qp:
+        del qp["department"]
     qp["scenario"] = st.session_state[SCENARIO_KEY]
     qp["compare"] = st.session_state[COMPARE_KEY]
     if "half" in qp:
@@ -194,6 +222,8 @@ def _base_mask(df: pd.DataFrame) -> pd.Series:
         mask &= df["segment"].isin(st.session_state[SEGMENTS_KEY])
     if st.session_state[REGIONS_KEY]:
         mask &= df["region"].isin(st.session_state[REGIONS_KEY])
+    if st.session_state[DEPARTMENT_KEY]:
+        mask &= df["department"].isin(st.session_state[DEPARTMENT_KEY])
     return mask
 
 
@@ -205,16 +235,12 @@ def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def apply_filters_excluding(df: pd.DataFrame, exclude: str) -> pd.DataFrame:
-    """Like apply_filters, but skips one dimension's OWN filter -- "segments"
-    or "regions". Used to build segment_bar/region_bar's figure so every
-    segment/region stays present as a bar regardless of the dropdown filter
-    for that same dimension -- only marker colors change, to highlight the
-    active selection (see charts.py's `selected` param) instead of the chart
-    shrinking to a single bar. (segment_bar/region_bar are display-only --
-    Streamlit's on_select bridge doesn't report clicks on their trace in
-    this build, see charts.py's module docstring -- but this still matters:
-    without it, choosing a segment from the dropdown would leave its own
-    "by segment" chart showing just one bar, which reads as broken.)
+    """Like apply_filters, but skips one dimension's OWN filter -- "segments",
+    "regions", or "department". Used to build a chart's figure so every
+    category in that dimension stays present regardless of the filter for
+    that same dimension -- only marker colors change, to highlight the
+    active selection (see the `selected` params in charts_alt.py) instead of
+    the chart shrinking to a single bar or panel.
     """
     start, end = _current_date_range()
     mask = (df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))
@@ -223,6 +249,8 @@ def apply_filters_excluding(df: pd.DataFrame, exclude: str) -> pd.DataFrame:
         mask &= df["segment"].isin(st.session_state[SEGMENTS_KEY])
     if exclude != "regions" and st.session_state[REGIONS_KEY]:
         mask &= df["region"].isin(st.session_state[REGIONS_KEY])
+    if exclude != "department" and st.session_state[DEPARTMENT_KEY]:
+        mask &= df["department"].isin(st.session_state[DEPARTMENT_KEY])
     return df.loc[mask]
 
 
@@ -242,6 +270,8 @@ def dim_filtered_excluding(df: pd.DataFrame, exclude: str) -> pd.DataFrame:
         mask &= df["segment"].isin(st.session_state[SEGMENTS_KEY])
     if exclude != "regions" and st.session_state[REGIONS_KEY]:
         mask &= df["region"].isin(st.session_state[REGIONS_KEY])
+    if exclude != "department" and st.session_state[DEPARTMENT_KEY]:
+        mask &= df["department"].isin(st.session_state[DEPARTMENT_KEY])
     return df.loc[mask]
 
 
@@ -269,6 +299,8 @@ def budget_period_df(df: pd.DataFrame) -> pd.DataFrame:
         mask &= df["segment"].isin(st.session_state[SEGMENTS_KEY])
     if st.session_state[REGIONS_KEY]:
         mask &= df["region"].isin(st.session_state[REGIONS_KEY])
+    if st.session_state[DEPARTMENT_KEY]:
+        mask &= df["department"].isin(st.session_state[DEPARTMENT_KEY])
     return df.loc[mask]
 
 
@@ -285,11 +317,11 @@ def handle_altair_select(event: dict | None, param: str, dim: str, master_key: s
     those rows.
 
     `track_key` is the chart's own st.altair_chart key, NOT `master_key`:
-    several charts filter the same dimension (the heatmap, the dumbbell and
-    the small multiples all write SEGMENTS_KEY), and a tracker shared between
-    them would read one chart's empty selection as "the user cleared it" and
-    wipe what another chart just set. Returns True if state changed, so the
-    caller can st.rerun().
+    several charts filter the same dimension (the drill-down, the dumbbell
+    and the small multiples all write SEGMENTS_KEY), and a tracker shared
+    between them would read one chart's empty selection as "the user cleared
+    it" and wipe what another chart just set. Returns True if state changed,
+    so the caller can st.rerun().
     """
     rows = []
     if event is not None:
@@ -327,6 +359,10 @@ def clear_chart_selections() -> None:
         old = chart_key(name)
         st.session_state.pop(old, None)
         st.session_state.pop(_last_click_key(old), None)
+    for level in DRILL_LEVELS:
+        old = drill_chart_key(level)
+        st.session_state.pop(old, None)
+        st.session_state.pop(_last_click_key(old), None)
     st.session_state[CHART_GEN_KEY] = st.session_state.get(CHART_GEN_KEY, 0) + 1
 
 
@@ -334,6 +370,7 @@ def reset_filters(default_start: dt.date, default_end: dt.date) -> None:
     _set_master(DATE_KEY, (default_start, default_end))
     _set_master(SEGMENTS_KEY, [])
     _set_master(REGIONS_KEY, [])
+    _set_master(DEPARTMENT_KEY, [])
     _set_master(SCENARIO_KEY, "Actual")
     _set_master(COMPARE_KEY, "Prior Period")
     clear_chart_selections()
@@ -352,6 +389,11 @@ def active_filter_chips(default_start: dt.date, default_end: dt.date) -> list[tu
     for seg in st.session_state[SEGMENTS_KEY]:
         def _clear_seg(s=seg):
             _set_master(SEGMENTS_KEY, [v for v in st.session_state[SEGMENTS_KEY] if v != s])
+            # Department is a drill-down INTO a segment, so clearing the
+            # segment clears its department too -- otherwise the page would
+            # be left filtered to a department whose parent segment chip is
+            # gone, which reads as the segment filter not having worked.
+            _set_master(DEPARTMENT_KEY, [])
             clear_chart_selections()
 
         chips.append((f"Segment: {seg}", _clear_seg))
@@ -362,6 +404,13 @@ def active_filter_chips(default_start: dt.date, default_end: dt.date) -> list[tu
             clear_chart_selections()
 
         chips.append((f"Region: {reg}", _clear_reg))
+
+    for dept in st.session_state[DEPARTMENT_KEY]:
+        def _clear_dept(d=dept):
+            _set_master(DEPARTMENT_KEY, [v for v in st.session_state[DEPARTMENT_KEY] if v != d])
+            clear_chart_selections()
+
+        chips.append((f"Department: {dept}", _clear_dept))
 
     if st.session_state[SCENARIO_KEY] != "Actual":
         def _clear_scenario():
@@ -376,3 +425,22 @@ def active_filter_chips(default_start: dt.date, default_end: dt.date) -> list[tu
         chips.append((f"Compare to: {st.session_state[COMPARE_KEY]}", _clear_compare))
 
     return chips
+
+
+def filter_summary(exclude: str | None = None) -> str:
+    """Short "Filtered: ..." string for a chart's own heading, so a click
+    changes what the chart is titled as well as what it shows -- Tableau's
+    dynamic-title convention. `exclude` leaves out the dimension a chart
+    itself owns (its own selection already reads as highlighted marks, not
+    a filter description) so its heading doesn't say e.g. "Filtered:
+    Retail Banking Services" underneath a chart whose own bars ARE segments."""
+    parts = []
+    if exclude != "segments" and st.session_state[SEGMENTS_KEY]:
+        parts.append(" / ".join(st.session_state[SEGMENTS_KEY]))
+    if exclude != "department" and st.session_state[DEPARTMENT_KEY]:
+        parts.append(" / ".join(st.session_state[DEPARTMENT_KEY]))
+    if exclude != "regions" and st.session_state[REGIONS_KEY]:
+        parts.append(" / ".join(st.session_state[REGIONS_KEY]))
+    if st.session_state[SCENARIO_KEY] != "Actual":
+        parts.append(st.session_state[SCENARIO_KEY])
+    return " · ".join(parts)

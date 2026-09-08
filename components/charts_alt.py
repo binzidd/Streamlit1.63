@@ -40,9 +40,6 @@ SHORT = {
     "New Zealand (ASB)": "New Zealand",
 }
 
-# Sequential ramp (single hue, light->dark) for magnitude encodings.
-SEQUENTIAL = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#2a78d6", "#1c5cab", "#104281"]
-
 # Diverging pair for variance-to-budget (blue <-> red, neutral gray midpoint).
 DIVERGING = ["#0d366b", "#2a78d6", "#9ec5f4", "#f0efec", "#f2b3b2", "#e34948", "#8c1f1e"]
 
@@ -92,42 +89,66 @@ def _emphasis(values: list[str], selected: list[str], colors: dict[str, str] | N
     return [ACCENT if (not selected or v in selected) else MUTED for v in values]
 
 
-def segment_heatmap(df: pd.DataFrame, selected: list[str], metric: str = "operating_income") -> tuple[alt.Chart, str]:
-    """Month x segment magnitude grid -- sequential single hue. A grid of
-    magnitudes is the heatmap's job; it also carries far more data per pixel
-    than the stack of bar charts it replaces."""
-    df = df.copy()
-    df["month_sort"] = df["date"]
-    df["month_label"] = df["date"].dt.strftime("%b %y")
-    g = df.groupby(["month_label", "month_sort", "segment"], as_index=False)[metric].sum()
-    g["seg"] = g["segment"].map(SHORT)
-    # Emphasis dimming precomputed in pandas rather than alt.condition: the
-    # predicate form needs a real predicate, and "nothing selected" has none.
-    g["emph"] = [1.0 if (not selected or s in selected) else 0.25 for s in g["segment"]]
-    param = "heat_click"
-    click = alt.selection_point(fields=["segment"], name=param)
+def segment_department_drill(df_top: pd.DataFrame, df_drilled: pd.DataFrame, selected_segments: list[str],
+                             selected_departments: list[str], metric: str = "operating_income",
+                             label: str = "Operating Income") -> tuple[alt.Chart, str, str]:
+    """Segment totals; click a bar to drill into that segment's departments.
 
-    chart = (
-        alt.Chart(g)
-        .mark_rect(stroke="white", strokeWidth=2, cornerRadius=2)
-        .encode(
-            x=alt.X("month_label:N", sort=alt.SortField("month_sort"), title=None,
-                    axis=alt.Axis(labelAngle=0, labelOverlap=True)),
-            # labelOverlap=False: Vega drops band labels it thinks collide,
-            # which silently leaves rows unlabelled at this row height.
-            y=alt.Y("seg:N", sort=[SHORT[s] for s in SEGMENT_ORDER], title=None,
-                    axis=alt.Axis(labelOverlap=False, labelPadding=6)),
-            color=alt.Color(f"{metric}:Q", title=None,
-                            scale=alt.Scale(range=SEQUENTIAL),
-                            legend=alt.Legend(labelExpr=MONEY_LABEL, gradientLength=110)),
-            opacity=alt.Opacity("emph:Q", scale=None, legend=None),
+    Replaces a month x segment heatmap: color intensity is a poor tool for
+    comparing four-ish magnitudes precisely, and this data made it worse --
+    one segment dominates the scale, which crushed the other three into
+    near-identical pale cells. Sorted bar length is what actually lets you
+    read four values at a glance, and doubles as a natural drill-down
+    target: click "Retail" and the same panel re-renders one level down,
+    into Retail's own departments.
+
+    `df_top` should already be filtered by everything EXCEPT the segment
+    dimension (state.apply_filters_excluding(df, "segments")); `df_drilled`
+    by everything except department. Returns (chart, param_name, dim) --
+    dim is "segment" at the top level, "department" once drilled, so the
+    caller knows which master filter key this level's click belongs to.
+    """
+    drilled = len(selected_segments) == 1
+    param = "drill_click"
+
+    if not drilled:
+        g = df_top.groupby("segment", as_index=False)[metric].sum().sort_values(metric, ascending=False)
+        g["seg"] = g["segment"].map(SHORT)
+        g["color"] = g["segment"].map(SERIES)
+        g["amount_label"] = g[metric].map(fmt_currency)
+        order = g["seg"].tolist()
+        click = alt.selection_point(fields=["segment"], name=param)
+        bars = alt.Chart(g).mark_bar(cornerRadiusEnd=3, height=24).encode(
+            y=alt.Y("seg:N", sort=order, title=None),
+            x=alt.X(f"{metric}:Q", title=None, axis=money_axis()),
+            color=alt.Color("color:N", scale=None, legend=None),
             tooltip=[alt.Tooltip("segment:N", title="Segment"),
-                     alt.Tooltip("month_label:N", title="Month"),
-                     alt.Tooltip(f"{metric}:Q", title="Operating Income", format="$,.0f")],
+                     alt.Tooltip(f"{metric}:Q", title=label, format="$,.0f")],
+        ).add_params(click)
+        labels = alt.Chart(g).mark_text(align="left", dx=6, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
+            y=alt.Y("seg:N", sort=order), x=alt.X(f"{metric}:Q"), text="amount_label:N",
         )
-        .add_params(click)
+        return _base(bars + labels, 220), param, "segment"
+
+    seg = selected_segments[0]
+    g = df_drilled.groupby("department", as_index=False)[metric].sum().sort_values(metric, ascending=False)
+    seg_color = SERIES.get(seg, ACCENT)
+    g["emph"] = [seg_color if (not selected_departments or d in selected_departments) else MUTED
+                for d in g["department"]]
+    g["amount_label"] = g[metric].map(fmt_currency)
+    order = g["department"].tolist()
+    click = alt.selection_point(fields=["department"], name=param)
+    bars = alt.Chart(g).mark_bar(cornerRadiusEnd=3, height=24).encode(
+        y=alt.Y("department:N", sort=order, title=None, axis=alt.Axis(labelLimit=220)),
+        x=alt.X(f"{metric}:Q", title=None, axis=money_axis()),
+        color=alt.Color("emph:N", scale=None, legend=None),
+        tooltip=[alt.Tooltip("department:N", title="Department"),
+                 alt.Tooltip(f"{metric}:Q", title=label, format="$,.0f")],
+    ).add_params(click)
+    labels = alt.Chart(g).mark_text(align="left", dx=6, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
+        y=alt.Y("department:N", sort=order), x=alt.X(f"{metric}:Q"), text="amount_label:N",
     )
-    return _base(chart, 168), param
+    return _base(bars + labels, 220), param, "department"
 
 
 def segment_dumbbell(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[str],
@@ -175,7 +196,7 @@ def segment_dumbbell(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[s
         x=alt.X("actual:Q", scale=x_scale),
         text=alt.Text("variance_label:N"),
     )
-    return _base(rule + budget_pt + actual_pt + label, 150), param
+    return _base(rule + budget_pt + actual_pt + label, 220), param
 
 
 def region_variance(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[str],
@@ -209,7 +230,7 @@ def region_variance(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[st
         .add_params(click)
     )
     zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(stroke=AXIS, strokeWidth=1).encode(x="x:Q")
-    return _base(bars + zero, 170), param
+    return _base(bars + zero, 220), param
 
 
 def margin_scatter(df: pd.DataFrame, selected: list[str]) -> tuple[alt.Chart, str]:
@@ -221,10 +242,14 @@ def margin_scatter(df: pd.DataFrame, selected: list[str]) -> tuple[alt.Chart, st
     readable and puts the selected segment forward."""
     # NIM is a monthly rate annualised, so it has to be computed per month
     # and then averaged -- annualising a multi-month SUM of NII would
-    # overstate it by the number of months in the window.
+    # overstate it by the number of months in the window. Both sides of the
+    # ratio SUM across whatever rows make up a segment-month (region,
+    # department...) -- averaging assets instead silently depends on row
+    # count per group, which is what inflated NIM once department rows
+    # multiplied the row count without changing the true total.
     monthly = df.groupby(["segment", "date"]).agg(
         nii=("net_interest_income", "sum"),
-        assets=("avg_interest_earning_assets", "mean"),
+        assets=("avg_interest_earning_assets", "sum"),
     ).reset_index()
     monthly["nim"] = monthly["nii"] * 12 / monthly["assets"] * 100
     g = df.groupby("segment").agg(
@@ -257,7 +282,7 @@ def margin_scatter(df: pd.DataFrame, selected: list[str]) -> tuple[alt.Chart, st
     labels = alt.Chart(g).mark_text(dy=-18, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
         x="cti:Q", y="nim:Q", text="seg:N",
     )
-    return _base(pts + labels, 210), param
+    return _base(pts + labels, 220), param
 
 
 def trend_facets(df: pd.DataFrame, selected: list[str], metric: str = "cash_npat") -> tuple[alt.Chart, str]:
@@ -283,7 +308,7 @@ def trend_facets(df: pd.DataFrame, selected: list[str], metric: str = "cash_npat
                      alt.Tooltip(f"{metric}:Q", title="Cash NPAT", format="$,.0f")],
         )
         .add_params(click)
-        .properties(width=150, height=95)
+        .properties(width=150, height=140)
         .facet(facet=alt.Facet("seg:N", title=None, sort=[SHORT[s] for s in SEGMENT_ORDER],
                                header=alt.Header(labelFont=FONT, labelFontSize=11, labelColor=INK_SECONDARY)),
                columns=4)
@@ -336,7 +361,7 @@ def pnl_waterfall(df: pd.DataFrame) -> alt.Chart:
         y=alt.Y("high:Q"),
         text=alt.Text("amount_label:N"),
     )
-    return _base(bars + labels, 210)
+    return _base(bars + labels, 220)
 
 
 def sparkline(series: pd.Series, positive: bool = True) -> alt.Chart:

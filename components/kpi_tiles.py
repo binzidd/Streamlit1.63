@@ -21,7 +21,14 @@ def _flow(df: pd.DataFrame, col: str) -> pd.Series:
 
 
 def _nim(df: pd.DataFrame) -> pd.Series:
-    g = df.groupby("date").agg(nii=("net_interest_income", "sum"), assets=("avg_interest_earning_assets", "mean"))
+    # NIM = total annualised net interest income / total average earning
+    # assets -- both sides SUM across whatever rows make up a month (segment,
+    # region, department...). Averaging assets instead of summing them
+    # (an earlier version of this) silently depends on the row count per
+    # month: it happened to read plausibly at segment+region grain, then
+    # inflated NIM by ~2.5x once department rows multiplied the row count
+    # without changing the true total.
+    g = df.groupby("date").agg(nii=("net_interest_income", "sum"), assets=("avg_interest_earning_assets", "sum"))
     return (g["nii"] * 12 / g["assets"]).sort_index()
 
 
