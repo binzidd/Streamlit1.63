@@ -1,139 +1,84 @@
-"""KPI tile row: big number + delta vs prior period + sparkline, click-to-navigate."""
+"""KPI stat-tile strip: value, delta vs the chosen baseline, sparkline.
+
+A handful of headline numbers is a KPI row of stat tiles, not a chart -- the
+value leads, the delta gives it direction, the sparkline gives it shape.
+"""
 from __future__ import annotations
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
-from utils.formatting import fmt_currency, fmt_delta_pct, fmt_delta_pp, fmt_pct, fmt_number
+from components import charts_alt as C
+from utils.formatting import fmt_currency, fmt_delta_pct, fmt_delta_pp, fmt_pct
 
-POSITIVE = "#0F8A5F"
-NEGATIVE = "#C0392B"
-NEUTRAL = "#6B7280"
-LINE_COLOR = "#0F4C81"
+POSITIVE = "#006300"
+NEGATIVE = "#d03b3b"
+NEUTRAL = "#898781"
 
 
-def _monthly_flow(df: pd.DataFrame, col: str) -> pd.Series:
+def _flow(df: pd.DataFrame, col: str) -> pd.Series:
     return df.groupby("date")[col].sum().sort_index()
 
 
-def _monthly_stock(df: pd.DataFrame, col: str) -> pd.Series:
-    return df.groupby("date")[col].sum().sort_index()
-
-
-def _monthly_nim(df: pd.DataFrame) -> pd.Series:
+def _nim(df: pd.DataFrame) -> pd.Series:
     g = df.groupby("date").agg(nii=("net_interest_income", "sum"), assets=("avg_interest_earning_assets", "mean"))
     return (g["nii"] * 12 / g["assets"]).sort_index()
 
 
-def _monthly_cti(df: pd.DataFrame) -> pd.Series:
+def _cti(df: pd.DataFrame) -> pd.Series:
     g = df.groupby("date").agg(opex=("operating_expenses", "sum"), income=("operating_income", "sum"))
     return (g["opex"] / g["income"]).sort_index()
 
 
-def _period_value(series: pd.Series, kind: str) -> float | None:
+def _value(series: pd.Series, kind: str) -> float | None:
     if series.empty:
         return None
     if kind == "stock":
         return series.iloc[-1]
-    if kind in ("ratio_nim", "ratio_cti"):
+    if kind == "ratio":
         return series.mean()
     return series.sum()
 
 
-def _sparkline(series: pd.Series, color: str) -> go.Figure:
-    fig = go.Figure(
-        go.Scatter(
-            x=series.index,
-            y=series.values,
-            mode="lines",
-            line=dict(color=color, width=2),
-            fill="tozeroy",
-            fillcolor="rgba(15, 76, 129, 0.10)",
-            hoverinfo="skip",
-        )
-    )
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        height=48,
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        showlegend=False,
-    )
-    return fig
-
-
 KPI_DEFS = [
-    dict(key="operating_income", label="Operating Income", kind="flow", fmt=fmt_currency, delta="pct", series_fn=lambda d: _monthly_flow(d, "operating_income")),
-    dict(key="cash_npat", label="Cash NPAT", kind="flow", fmt=fmt_currency, delta="pct", series_fn=lambda d: _monthly_flow(d, "cash_npat")),
-    dict(key="nim", label="Net Interest Margin", kind="ratio_nim", fmt=fmt_pct, delta="pp", series_fn=_monthly_nim),
-    dict(key="cti", label="Cost-to-Income Ratio", kind="ratio_cti", fmt=fmt_pct, delta="pp", delta_invert=True, series_fn=_monthly_cti),
-    dict(key="loan_impairment_expense", label="Loan Impairment Expense", kind="flow", fmt=fmt_currency, delta="pct", delta_invert=True, series_fn=lambda d: _monthly_flow(d, "loan_impairment_expense")),
-    dict(key="deposits", label="Customer Deposits", kind="stock", fmt=fmt_currency, delta="pct", series_fn=lambda d: _monthly_stock(d, "deposits")),
+    dict(key="operating_income", label="Operating Income", kind="flow", fmt=fmt_currency, delta="pct",
+         series_fn=lambda d: _flow(d, "operating_income")),
+    dict(key="cash_npat", label="Cash NPAT", kind="flow", fmt=fmt_currency, delta="pct",
+         series_fn=lambda d: _flow(d, "cash_npat")),
+    dict(key="nim", label="Net Interest Margin", kind="ratio", fmt=fmt_pct, delta="pp", series_fn=_nim),
+    dict(key="cti", label="Cost-to-Income", kind="ratio", fmt=fmt_pct, delta="pp", invert=True, series_fn=_cti),
+    dict(key="loan_impairment_expense", label="Loan Impairment", kind="flow", fmt=fmt_currency, delta="pct",
+         invert=True, series_fn=lambda d: _flow(d, "loan_impairment_expense")),
+    dict(key="deposits", label="Customer Deposits", kind="stock", fmt=fmt_currency, delta="pct",
+         series_fn=lambda d: _flow(d, "deposits")),
 ]
 
-VIEW_FOR_KPI = {
-    "operating_income": "Overview",
-    "cash_npat": "Overview",
-    "nim": "Profitability",
-    "cti": "Profitability",
-    "loan_impairment_expense": "Profitability",
-    "deposits": "Balance Sheet",
-}
 
-
-def render_kpi_row(period_df: pd.DataFrame, compare_df: pd.DataFrame, trend_df: pd.DataFrame, active_view_key: str, compare_label: str = "prior period") -> None:
-    # .copy(): sparkline/KPI charts and the Overview bar charts otherwise read
-    # the same columns off the same shared DataFrame, which confuses
-    # Streamlit's plotly_chart on_select bridge for unrelated widgets later
-    # in the run (see the matching comment in components/charts.py).
-    period_df = period_df.copy()
-    compare_df = compare_df.copy()
-    trend_df = trend_df.copy()
+def render_kpi_row(period_df: pd.DataFrame, compare_df: pd.DataFrame, trend_df: pd.DataFrame,
+                   compare_label: str = "prior period") -> None:
     cols = st.columns(len(KPI_DEFS))
     for col, kpi in zip(cols, KPI_DEFS):
-        series = kpi["series_fn"](period_df)
-        current = _period_value(series, kpi["kind"])
+        current = _value(kpi["series_fn"](period_df), kpi["kind"])
+        baseline = _value(kpi["series_fn"](compare_df), kpi["kind"]) if not compare_df.empty else None
 
-        compare_series = kpi["series_fn"](compare_df) if not compare_df.empty else pd.Series(dtype=float)
-        prior = _period_value(compare_series, kpi["kind"])
+        fmt_delta = fmt_delta_pp if kpi["delta"] == "pp" else fmt_delta_pct
+        delta_str, raw = fmt_delta(current, baseline, compare_label) if current is not None else (f"n/a vs {compare_label}", None)
 
-        if kpi["delta"] == "pp":
-            delta_str, raw = fmt_delta_pp(current, prior, compare_label) if current is not None else (f"n/a vs {compare_label}", None)
-        else:
-            delta_str, raw = fmt_delta_pct(current, prior, compare_label) if current is not None else (f"n/a vs {compare_label}", None)
-
-        invert = kpi.get("delta_invert", False)
         if raw is None:
             color = NEUTRAL
-        elif (raw >= 0) != invert:
+        elif (raw >= 0) != kpi.get("invert", False):
             color = POSITIVE
         else:
             color = NEGATIVE
 
-        trend_series = kpi["series_fn"](trend_df).tail(18)
-
-        with col:
-            with st.container(border=True):
-                st.caption(kpi["label"])
-                st.markdown(
-                    f"<div style='font-size:1.6rem;font-weight:700;line-height:1.1;color:#1A1D21'>"
-                    f"{kpi['fmt'](current) if current is not None else '—'}</div>",
-                    unsafe_allow_html=True,
-                )
-                st.markdown(
-                    f"<div style='font-size:0.78rem;color:{color};font-weight:600;margin-top:2px'>{delta_str}</div>",
-                    unsafe_allow_html=True,
-                )
-                if not trend_series.empty and trend_series.notna().any():
-                    st.plotly_chart(
-                        _sparkline(trend_series, LINE_COLOR),
-                        use_container_width=True,
-                        config={"displayModeBar": False},
-                        key=f"spark_{kpi['key']}",
-                    )
-                if st.button("View detail →", key=f"nav_{kpi['key']}", use_container_width=True):
-                    st.session_state[active_view_key] = VIEW_FOR_KPI[kpi["key"]]
-                    st.rerun()
+        with col, st.container(border=True):
+            st.markdown(
+                f"<div style='font-size:0.7rem;color:#52514e;line-height:1.2'>{kpi['label']}</div>"
+                f"<div style='font-size:1.35rem;font-weight:750;line-height:1.25;color:#0b0b0b'>"
+                f"{kpi['fmt'](current) if current is not None else '—'}</div>"
+                f"<div style='font-size:0.68rem;color:{color};font-weight:600'>{delta_str}</div>",
+                unsafe_allow_html=True,
+            )
+            spark = kpi["series_fn"](trend_df).tail(18)
+            if not spark.empty and spark.notna().any():
+                st.altair_chart(C.sparkline(spark), use_container_width=True)
