@@ -150,16 +150,19 @@ department_sel = st.session_state[state.DEPARTMENT_KEY]
 render_kpi_row(filtered_df, compare_df, trend_df, compare_label=compare_label)
 
 # ------------------------------------------------------------- chart grid --
-row1_a, row1_b = st.columns(2, gap="large")
+row1_a, row1_b = st.columns(2, gap="medium")
 with row1_a:
     drilled = len(segments_sel) == 1
     if drilled:
         drill_title = f"Operating income by department — {segments_sel[0]}"
-        drill_hint = "Click a bar to filter that department · clear the Segment chip above to zoom back out"
+        drill_hint = "Click a bar to filter that department"
     else:
         drill_title = "Operating income by segment"
-        drill_hint = "Click a bar to drill into that segment's departments"
+        drill_hint = "+ click a bar to drill in"
     with card(drill_title, drill_hint, owns=("department" if drilled else "segments")):
+        if drilled and st.button("− Back to segments", key="drill_up"):
+            state.drill_up()
+            st.rerun()
         df_top = state.apply_filters_excluding(df, "segments")
         df_drilled = state.apply_filters_excluding(df, "department")
         chart, param, dim = C.segment_department_drill(df_top, df_drilled, segments_sel, department_sel)
@@ -175,7 +178,7 @@ with row1_b:
         if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("dumbbell")):
             st.rerun()
 
-row2_a, row2_b = st.columns(2, gap="large")
+row2_a, row2_b = st.columns(2, gap="medium")
 with row2_a:
     with card("Variance to budget by region", "Click a bar to filter that region", owns="regions"):
         chart, param = C.region_variance(state.apply_filters_excluding(df, "regions"), budget_df, regions_sel)
@@ -189,7 +192,7 @@ with row2_b:
         if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("scatter")):
             st.rerun()
 
-row3_a, row3_b = st.columns(2, gap="large")
+row3_a, row3_b = st.columns(2, gap="medium")
 with row3_a:
     with card("Cash NPAT trend by segment", "Click a panel to filter that segment", owns="segments"):
         chart, param = C.trend_facets(state.dim_filtered_excluding(df, "segments"), segments_sel)

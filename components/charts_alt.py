@@ -40,10 +40,9 @@ SHORT = {
     "New Zealand (ASB)": "New Zealand",
 }
 
-# Diverging pair for variance-to-budget (blue <-> red, neutral gray midpoint).
-DIVERGING = ["#0d366b", "#2a78d6", "#9ec5f4", "#f0efec", "#f2b3b2", "#e34948", "#8c1f1e"]
-
 ACCENT = "#2a78d6"
+POS = "#1baf7a"
+NEG = "#e34948"
 MUTED = "#d7dee6"
 INK = "#0b0b0b"
 INK_SECONDARY = "#52514e"
@@ -115,7 +114,7 @@ def segment_department_drill(df_top: pd.DataFrame, df_drilled: pd.DataFrame, sel
         g = df_top.groupby("segment", as_index=False)[metric].sum().sort_values(metric, ascending=False)
         g["seg"] = g["segment"].map(SHORT)
         g["color"] = g["segment"].map(SERIES)
-        g["amount_label"] = g[metric].map(fmt_currency)
+        g["amount_label"] = g[metric].map(fmt_currency) + "   +"
         order = g["seg"].tolist()
         click = alt.selection_point(fields=["segment"], name=param)
         bars = alt.Chart(g).mark_bar(cornerRadiusEnd=3, height=24).encode(
@@ -201,26 +200,37 @@ def segment_dumbbell(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[s
 
 def region_variance(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[str],
                     metric: str = "operating_income") -> tuple[alt.Chart, str]:
-    """Variance to budget by region -- a diverging bar centred on zero, so
-    above/below budget reads as direction, not as two similar bar heights."""
+    """Variance to budget by region -- a bullet chart: a pale range bar sized
+    to the larger of actual/budget, a bold bar for the actual result, and a
+    tick marking the budget target. This is the standard BI form for
+    actual-vs-target specifically because it doesn't make you compute a
+    height difference by eye -- the tick IS the target, the bar IS the
+    result, and color says which side of it you landed on."""
     actual = df.groupby("region", as_index=False)[metric].sum().rename(columns={metric: "actual"})
     budget = budget_df.groupby("region", as_index=False)[metric].sum().rename(columns={metric: "budget"})
     g = actual.merge(budget, on="region", how="outer").fillna(0.0)
     g["variance"] = g["actual"] - g["budget"]
     g["pct"] = (g["variance"] / g["budget"].replace(0, pd.NA)).fillna(0.0)
-    g = g.sort_values("variance")
-    g["emph"] = [1.0 if (not selected or r in selected) else 0.3 for r in g["region"]]
+    g["range_max"] = g[["actual", "budget"]].max(axis=1) * 1.15
+    g = g.sort_values("actual", ascending=False)
+    g["color"] = [POS if v >= 0 else NEG for v in g["variance"]]
+    g["emph"] = [1.0 if (not selected or r in selected) else 0.35 for r in g["region"]]
+    order = g["region"].tolist()
 
     param = "var_click"
     click = alt.selection_point(fields=["region"], name=param)
 
-    bars = (
+    range_bg = alt.Chart(g).mark_bar(color=GRID, height=20, cornerRadiusEnd=2).encode(
+        y=alt.Y("region:N", sort=order, title=None),
+        x=alt.X("range_max:Q", title=None, axis=money_axis()),
+    )
+    actual_bar = (
         alt.Chart(g)
-        .mark_bar(cornerRadiusEnd=3, height=14)
+        .mark_bar(height=8, cornerRadiusEnd=2)
         .encode(
-            y=alt.Y("region:N", sort=g["region"].tolist(), title=None),
-            x=alt.X("variance:Q", title=None, axis=alt.Axis(labelExpr=MONEY_LABEL_SIGNED)),
-            color=alt.Color("variance:Q", scale=alt.Scale(range=DIVERGING, domainMid=0), legend=None),
+            y=alt.Y("region:N", sort=order, title=None),
+            x=alt.X("actual:Q"),
+            color=alt.Color("color:N", scale=None, legend=None),
             opacity=alt.Opacity("emph:Q", scale=None, legend=None),
             tooltip=[alt.Tooltip("region:N", title="Region"),
                      alt.Tooltip("actual:Q", title="Actual", format="$,.0f"),
@@ -229,8 +239,12 @@ def region_variance(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[st
         )
         .add_params(click)
     )
-    zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(stroke=AXIS, strokeWidth=1).encode(x="x:Q")
-    return _base(bars + zero, 220), param
+    target = alt.Chart(g).mark_tick(color=INK, thickness=2, height=22).encode(
+        y=alt.Y("region:N", sort=order, title=None),
+        x=alt.X("budget:Q"),
+        tooltip=[alt.Tooltip("region:N", title="Region"), alt.Tooltip("budget:Q", title="Budget target", format="$,.0f")],
+    )
+    return _base(range_bg + actual_bar + target, 220), param
 
 
 def margin_scatter(df: pd.DataFrame, selected: list[str]) -> tuple[alt.Chart, str]:
@@ -264,12 +278,26 @@ def margin_scatter(df: pd.DataFrame, selected: list[str]) -> tuple[alt.Chart, st
     param = "scatter_click"
     click = alt.selection_point(fields=["segment"], name=param)
 
+    # Median reference lines turn a plain bubble scatter into a four-square
+    # analysis: a segment's quadrant (vs the group median on both axes) is
+    # the actual read of this chart, not its raw x/y position.
+    med_cti = float(g["cti"].median())
+    med_nim = float(g["nim"].median())
+    x_scale = alt.Scale(zero=False, nice=True)
+    y_scale = alt.Scale(zero=False, nice=True)
+
+    vline = alt.Chart(pd.DataFrame({"x": [med_cti]})).mark_rule(stroke=GRID, strokeDash=[4, 3]).encode(
+        x=alt.X("x:Q", scale=x_scale),
+    )
+    hline = alt.Chart(pd.DataFrame({"y": [med_nim]})).mark_rule(stroke=GRID, strokeDash=[4, 3]).encode(
+        y=alt.Y("y:Q", scale=y_scale),
+    )
     pts = (
         alt.Chart(g)
         .mark_circle(stroke="white", strokeWidth=1.5, opacity=1)
         .encode(
-            x=alt.X("cti:Q", title="Cost-to-income %", scale=alt.Scale(zero=False, nice=True)),
-            y=alt.Y("nim:Q", title="Net interest margin %", scale=alt.Scale(zero=False, nice=True)),
+            x=alt.X("cti:Q", title="Cost-to-income %", scale=x_scale),
+            y=alt.Y("nim:Q", title="Net interest margin %", scale=y_scale),
             size=alt.Size("income:Q", scale=alt.Scale(range=[200, 1400]), legend=None),
             color=alt.Color("emph:N", scale=None, legend=None),
             tooltip=[alt.Tooltip("segment:N", title="Segment"),
@@ -280,9 +308,9 @@ def margin_scatter(df: pd.DataFrame, selected: list[str]) -> tuple[alt.Chart, st
         .add_params(click)
     )
     labels = alt.Chart(g).mark_text(dy=-18, font=FONT, fontSize=10, color=INK_SECONDARY).encode(
-        x="cti:Q", y="nim:Q", text="seg:N",
+        x=alt.X("cti:Q", scale=x_scale), y=alt.Y("nim:Q", scale=y_scale), text="seg:N",
     )
-    return _base(pts + labels, 220), param
+    return _base(vline + hline + pts + labels, 220), param
 
 
 def trend_facets(df: pd.DataFrame, selected: list[str], metric: str = "cash_npat") -> tuple[alt.Chart, str]:
@@ -298,7 +326,7 @@ def trend_facets(df: pd.DataFrame, selected: list[str], metric: str = "cash_npat
 
     chart = (
         alt.Chart(g)
-        .mark_area(line={"strokeWidth": 2}, opacity=0.18, interpolate="monotone")
+        .mark_area(line={"strokeWidth": 2}, opacity=0.18, interpolate="monotone", clip=True)
         .encode(
             x=alt.X("date:T", title=None, axis=alt.Axis(format="%b %y", labelOverlap=True, tickCount=3)),
             y=alt.Y(f"{metric}:Q", title=None, axis=alt.Axis(labelExpr=MONEY_LABEL, tickCount=3)),
@@ -369,7 +397,7 @@ def sparkline(series: pd.Series, positive: bool = True) -> alt.Chart:
     g = pd.DataFrame({"date": series.index, "value": series.values})
     return (
         alt.Chart(g)
-        .mark_area(line={"strokeWidth": 1.5, "color": ACCENT}, color=ACCENT, opacity=0.15, interpolate="monotone")
+        .mark_area(line={"strokeWidth": 1.5, "color": ACCENT}, color=ACCENT, opacity=0.15, interpolate="monotone", clip=True)
         .encode(
             x=alt.X("date:T", axis=None),
             y=alt.Y("value:Q", axis=None, scale=alt.Scale(zero=False)),
