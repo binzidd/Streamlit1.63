@@ -150,7 +150,11 @@ def _table_and_bars(g: pd.DataFrame, y_field: str, order: list[str], dim: str, l
     table's dividing line.
     """
     vmax = float(g[metric].max()) if len(g) else 1.0
-    gutter = vmax * 0.34
+    # Just enough gutter for the widest value string ("A$14.2B") to sit
+    # close to the zero line -- 0.34 reserved far more negative space than
+    # the text needed, which read as a large gap between the row label and
+    # its number rather than a tight table column.
+    gutter = vmax * 0.15
     x_scale = alt.Scale(domain=[-gutter, vmax * 1.08], nice=False)
     g = g.assign(_zero=0.0)
 
@@ -212,10 +216,15 @@ def segment_dumbbell(df: pd.DataFrame, budget_df: pd.DataFrame, selected: list[s
         x=alt.X("budget:Q", title=None, axis=None, scale=x_scale),
         x2="actual:Q",
     )
-    budget_pt = alt.Chart(g).mark_point(filled=True, size=90, shape="diamond", stroke="white", strokeWidth=1.5).encode(
+    # Budget is a target to hit, not a data point with its own identity --
+    # a cross (rotated to an X) is the Tableau-standard "target" glyph and
+    # reads as categorically different from actual's filled dot at a glance,
+    # rather than two same-family shapes (circle vs. diamond) that only
+    # separated visually because they happened to sit at different x.
+    budget_pt = alt.Chart(g).mark_point(filled=False, size=130, shape="cross", angle=45,
+                                        stroke=AXIS, strokeWidth=2.2).encode(
         y=alt.Y("seg:N", sort=order, title=None),
         x=alt.X("budget:Q", scale=x_scale),
-        color=alt.value(AXIS),
         tooltip=[alt.Tooltip("segment:N", title="Segment"), alt.Tooltip("budget:Q", title="Budget", format="$,.0f")],
     )
     actual_pt = alt.Chart(g).mark_point(filled=True, size=150, stroke="white", strokeWidth=1.5).encode(
