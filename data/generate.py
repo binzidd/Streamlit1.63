@@ -156,8 +156,15 @@ def generate_dataset(seed: int = 42) -> pd.DataFrame:
                     seasonal = _seasonal(date.month)
                     noise = rng.normal(1.0, 0.015 if is_budget else 0.045)
                     if is_budget:
-                        # budget set flat off trend growth, no seasonality surprises
-                        income = base_monthly_income * (1 + 0.04 * year_index[i]) * region_weight * noise
+                        # Budget assumes a conservative 2.5%/yr vs. the ~4.5%/yr
+                        # actual trend growth below -- a bank beating its own
+                        # budget is the plausible story, and the resulting
+                        # variance (mid-to-high single digit %) is wide enough
+                        # to actually read on a dollar-scale actual-vs-budget
+                        # chart. The original 4%/yr assumption tracked actual
+                        # so closely (variance under 1-2%) that the two were
+                        # visually indistinguishable regardless of marker shape.
+                        income = base_monthly_income * (1 + 0.025 * year_index[i]) * region_weight * noise
                     else:
                         income = base_monthly_income * growth[i] * seasonal * region_weight * noise
 
