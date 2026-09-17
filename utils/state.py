@@ -375,6 +375,22 @@ def drill_up() -> None:
     clear_chart_selections()
 
 
+def apply_preset(preset: dict) -> None:
+    """Write a saved-view preset into the master filter state and mark widgets
+    for re-sync. Call before st.rerun() so every widget picks up the new values."""
+    if "date_start" in preset:
+        _set_master(DATE_KEY, (
+            dt.date.fromisoformat(preset["date_start"]),
+            dt.date.fromisoformat(preset["date_end"]),
+        ))
+    _set_master(SEGMENTS_KEY,  preset.get("segments", []))
+    _set_master(REGIONS_KEY,   preset.get("regions", []))
+    _set_master(DEPARTMENT_KEY, preset.get("department", []))
+    _set_master(SCENARIO_KEY,  preset.get("scenario", "Actual"))
+    _set_master(COMPARE_KEY,   preset.get("compare", COMPARE_OPTIONS[0]))
+    clear_chart_selections()
+
+
 def reset_filters(default_start: dt.date, default_end: dt.date) -> None:
     _set_master(DATE_KEY, (default_start, default_end))
     _set_master(SEGMENTS_KEY, [])

@@ -22,6 +22,7 @@ import streamlit as st
 from components import charts_alt as C
 from components.kpi_tiles import render_kpi_row
 from components.tv_chart import st_tv_chart
+from utils import presets as presets_mod
 from data.generate import (
     PAYOUT_RATIO,
     SHARES_OUTSTANDING,
@@ -110,6 +111,59 @@ with reset:
         state.reset_filters(DEFAULT_START, DEFAULT_END)
         st.rerun()
 state.sync_after_widgets()
+
+# ------------------------------------------------------- saved views row --
+_PLACEHOLDER = "— Load a saved view —"
+_preset_widget_key = f"_preset_sel_{st.session_state.get('_preset_reset_ctr', 0)}"
+_presets = presets_mod.load_presets()
+_preset_names = list(_presets.keys())
+
+pv1, pv2, pv3, pv4 = st.columns([1.8, 1.6, 0.65, 0.65], vertical_alignment="bottom")
+with pv1:
+    _chosen = st.selectbox(
+        "Saved views",
+        [_PLACEHOLDER] + _preset_names,
+        key=_preset_widget_key,
+        label_visibility="collapsed",
+    )
+with pv2:
+    _new_name = st.text_input(
+        "View name",
+        placeholder="Name this view…",
+        key="_preset_name",
+        label_visibility="collapsed",
+    )
+with pv3:
+    if st.button("💾 Save", use_container_width=True, disabled=not _new_name.strip()):
+        _date_val = st.session_state[state.DATE_KEY]
+        _ds, _de = (str(_date_val[0]), str(_date_val[1])) if isinstance(_date_val, tuple) and len(_date_val) == 2 else (str(_date_val), str(_date_val))
+        presets_mod.save_preset(_new_name.strip(), {
+            "date_start":  _ds,
+            "date_end":    _de,
+            "segments":    list(st.session_state[state.SEGMENTS_KEY]),
+            "regions":     list(st.session_state[state.REGIONS_KEY]),
+            "department":  list(st.session_state[state.DEPARTMENT_KEY]),
+            "scenario":    st.session_state[state.SCENARIO_KEY],
+            "compare":     st.session_state[state.COMPARE_KEY],
+        })
+        st.session_state["_preset_applied"] = _new_name.strip()
+        st.toast(f'View "{_new_name.strip()}" saved', icon="✅")
+        st.rerun()
+with pv4:
+    _can_delete = _chosen != _PLACEHOLDER and _chosen in _presets
+    if st.button("🗑️ Delete", use_container_width=True, disabled=not _can_delete):
+        presets_mod.delete_preset(_chosen)
+        st.session_state["_preset_reset_ctr"] = st.session_state.get("_preset_reset_ctr", 0) + 1
+        st.session_state.pop("_preset_applied", None)
+        st.toast(f'View "{_chosen}" deleted')
+        st.rerun()
+
+# Apply preset if the user selected a new one
+if _chosen != _PLACEHOLDER and st.session_state.get("_preset_applied") != _chosen:
+    if _chosen in _presets:
+        state.apply_preset(_presets[_chosen])
+        st.session_state["_preset_applied"] = _chosen
+        st.rerun()
 
 chips = state.active_filter_chips(DEFAULT_START, DEFAULT_END)
 if chips:
