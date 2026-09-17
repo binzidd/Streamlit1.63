@@ -235,3 +235,76 @@ def get_halves(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
     return halves
+
+
+SHARES_OUTSTANDING = 1_700_000_000  # illustrative, CBA-scale
+PAYOUT_RATIO = 0.70
+
+
+@st.cache_data(show_spinner=False)
+def generate_stock_data(seed: int = 42) -> pd.DataFrame:
+    """Synthetic daily OHLCV for the illustrative bank stock (A$).
+
+    Price follows a geometric Brownian motion anchored to the earnings trend,
+    with a deliberate 2024 run-up (earnings beat) and a mild 2025 plateau.
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range(START, END)
+    n = len(dates)
+
+    mu = 0.07 / 252     # 7 % annual drift
+    sigma = 0.014       # 1.4 % daily vol
+
+    # Story drift: strong 2024, soft early 2025
+    story = np.zeros(n)
+    for i, d in enumerate(dates):
+        if pd.Timestamp("2024-01-01") <= d <= pd.Timestamp("2024-09-30"):
+            story[i] = 0.00035
+        elif pd.Timestamp("2025-01-01") <= d <= pd.Timestamp("2025-07-31"):
+            story[i] = -0.00018
+
+    log_ret = rng.normal(mu + story, sigma)
+    closes = np.round(105.0 * np.exp(np.cumsum(log_ret)), 2)
+
+    intra = sigma * 0.45
+    opens = np.round(closes * np.exp(rng.normal(0, intra * 0.3, n)), 2)
+    highs = np.round(np.maximum(opens, closes) * np.exp(np.abs(rng.normal(0, intra * 0.5, n))), 2)
+    lows  = np.round(np.minimum(opens, closes) * np.exp(-np.abs(rng.normal(0, intra * 0.5, n))), 2)
+    vols  = rng.lognormal(15.6, 0.45, n).astype(int)  # ~5-15 M shares/day
+
+    return pd.DataFrame({
+        "date":   dates,
+        "open":   opens,
+        "high":   highs,
+        "low":    lows,
+        "close":  closes,
+        "volume": vols,
+    })
+
+
+@st.cache_data(show_spinner=False)
+def generate_peer_data(seed: int = 99) -> dict[str, pd.DataFrame]:
+    """Weekly closing prices for three peer banks, ready for TV chart overlays.
+
+    Each DataFrame has columns ``time`` (ISO string) and ``value`` (float).
+    All series start at 100 to enable relative-performance comparison.
+    """
+    rng = np.random.default_rng(seed)
+    dates = pd.bdate_range(START, END, freq="W-FRI")
+    n = len(dates)
+
+    peers = {
+        "Peer A": {"mu": 0.065 / 52, "sigma": 0.022},
+        "Peer B": {"mu": 0.050 / 52, "sigma": 0.025},
+        "Peer C": {"mu": 0.040 / 52, "sigma": 0.019},
+    }
+
+    result: dict[str, pd.DataFrame] = {}
+    for name, cfg in peers.items():
+        log_ret = rng.normal(cfg["mu"], cfg["sigma"], n)
+        vals = np.round(100.0 * np.exp(np.cumsum(log_ret)), 2)
+        result[name] = pd.DataFrame({
+            "time":  [d.strftime("%Y-%m-%d") for d in dates],
+            "value": vals,
+        })
+    return result

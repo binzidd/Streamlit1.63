@@ -21,7 +21,15 @@ import streamlit as st
 
 from components import charts_alt as C
 from components.kpi_tiles import render_kpi_row
-from data.generate import generate_dataset
+from components.tv_chart import st_tv_chart
+from data.generate import (
+    SHARES_OUTSTANDING,
+    PAYOUT_RATIO,
+    generate_dataset,
+    generate_peer_data,
+    generate_stock_data,
+    get_halves,
+)
 from utils import state
 from utils.export import build_csv_bytes, build_excel_bytes
 
@@ -150,40 +158,25 @@ if filtered_df.empty:
     state.sync_url()
     st.stop()
 
-segments_sel = st.session_state[state.SEGMENTS_KEY]
-regions_sel = st.session_state[state.REGIONS_KEY]
-department_sel = st.session_state[state.DEPARTMENT_KEY]
+# ---------------------------------------------------------------- kpi row --
+render_kpi_row(filtered_df, prior_df, trend_df, active_view_key="active_view")
 
-# ----------------------------------------------------------------- KPI row --
-render_kpi_row(filtered_df, compare_df, trend_df, compare_label=compare_label)
+st.write("")
+active_view = st.segmented_control(
+    "View",
+    options=["Overview", "Profitability", "Balance Sheet", "Segments", "Market View", "Data & Export"],
+    key="active_view",
+    label_visibility="collapsed",
+)
+st.write("")
 
-# ------------------------------------------------------------- chart grid --
-row1_a, row1_b = st.columns(2, gap="medium")
-with row1_a:
-    drilled = len(segments_sel) == 1
-    if drilled:
-        drill_title = f"Operating income by department — {segments_sel[0]}"
-        drill_hint = "Click a bar to filter that department"
-    else:
-        drill_title = "Operating income by segment"
-        drill_hint = "+ click a bar to drill in"
-    with card(drill_title, drill_hint, owns=("department" if drilled else "segments")):
-        if drilled and st.button("− Back to segments", key="drill_up"):
-            state.drill_up()
-            st.rerun()
-        df_top = state.apply_filters_excluding(df, "segments")
-        df_drilled = state.apply_filters_excluding(df, "department")
-        chart, param, dim = C.segment_department_drill(df_top, df_drilled, segments_sel, department_sel)
-        level_key = state.drill_chart_key(dim)
-        master_key = state.SEGMENTS_KEY if dim == "segment" else state.DEPARTMENT_KEY
-        ev = st.altair_chart(chart, on_select="rerun", key=level_key, use_container_width=True)
-        if state.handle_altair_select(ev, param, dim, master_key, level_key):
-            st.rerun()
-with row1_b:
-    with card("Actual vs budget by segment", "Gap = variance · click a dot to filter", owns="segments"):
-        chart, param = C.segment_dumbbell(state.apply_filters_excluding(df, "segments"), budget_df, segments_sel)
-        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("dumbbell"), use_container_width=True)
-        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("dumbbell")):
+# ------------------------------------------------------------------- views --
+if active_view == "Overview":
+    c1, c2 = st.columns([1.3, 1])
+    with c1:
+        fig = charts.half_trend_bar(trend_df, st.session_state[state.HALF_KEY])
+        event = st.plotly_chart(fig, on_select="rerun", selection_mode="points", key="half_chart_overview", use_container_width=True)
+        if state.handle_half_click(event, halves):
             st.rerun()
 
 row2_a, row2_b = st.columns(2, gap="medium")
@@ -211,9 +204,161 @@ with row3_b:
     with card("Profitability bridge", "Operating income to Cash NPAT"):
         st.altair_chart(C.pnl_waterfall(filtered_df), use_container_width=True)
 
-# ------------------------------------------------------- detail + export --
-with st.expander("Data & export", expanded=False):
-    pivot_dim = st.selectbox("Group by", ["segment", "department", "region", "half"], format_func=str.title)
+elif active_view == "Market View":
+    # ---------------------------------------------------------------- stock data --
+    stock_df = generate_stock_data()
+    peer_map = generate_peer_data()
+
+    date_start, date_end = st.session_state[state.DATE_KEY]
+    ts_start = pd.Timestamp(date_start)
+    ts_end   = pd.Timestamp(date_end)
+
+    filtered_stock = stock_df[
+        (stock_df["date"] >= ts_start) & (stock_df["date"] <= ts_end)
+    ].copy()
+
+    # ----------------------------------------------------------- market KPIs --
+    latest_close = filtered_stock["close"].iloc[-1] if not filtered_stock.empty else 0.0
+    prev_close   = filtered_stock["close"].iloc[-2] if len(filtered_stock) > 1 else latest_close
+    day_chg_pct  = (latest_close - prev_close) / prev_close * 100 if prev_close else 0.0
+
+    # YTD: compare to close on the first trading day of the current calendar year
+    ytd_start_year = ts_end.year
+    ytd_base_df = stock_df[stock_df["date"].dt.year == ytd_start_year]
+    ytd_base = ytd_base_df["close"].iloc[0] if not ytd_base_df.empty else latest_close
+    ytd_pct = (latest_close - ytd_base) / ytd_base * 100 if ytd_base else 0.0
+
+    # Earnings-derived: use filtered_df (the earnings data for the period)
+    actual_earnings = filtered_df[filtered_df["scenario"] == "Actual"]
+    annual_npat = actual_earnings["cash_npat"].sum()
+    eps = annual_npat / SHARES_OUTSTANDING
+    pe_ratio = latest_close / eps if eps > 0 else 0.0
+    dps = eps * PAYOUT_RATIO
+    div_yield = dps / latest_close * 100 if latest_close > 0 else 0.0
+
+    mk1, mk2, mk3, mk4, mk5 = st.columns(5)
+    with mk1:
+        st.metric("Share Price", f"A${latest_close:.2f}", f"{day_chg_pct:+.2f}% today")
+    with mk2:
+        st.metric("YTD Return", f"{ytd_pct:+.1f}%")
+    with mk3:
+        st.metric("P/E Ratio", f"{pe_ratio:.1f}×")
+    with mk4:
+        st.metric("Dividend Yield", f"{div_yield:.2f}%")
+    with mk5:
+        st.metric("EPS (period)", f"A${eps:.4f}")
+
+    st.write("")
+
+    # ------------------------------------------------ candlestick + volume --
+    if filtered_stock.empty:
+        st.info("No stock data for the selected date range.")
+    else:
+        ohlcv = filtered_stock.copy()
+        ohlcv["time"] = ohlcv["date"].dt.strftime("%Y-%m-%d")
+        series_data = ohlcv[["time", "open", "high", "low", "close"]].to_dict("records")
+        vol_data    = ohlcv[["time", "volume"]].rename(columns={"volume": "value"}).to_dict("records")
+
+        st.markdown("**Share price — daily OHLCV**")
+        st_tv_chart(
+            series_data,
+            volume_data=vol_data,
+            chart_type="candlestick",
+            height=430,
+            key="tv_candle",
+        )
+
+        st.write("")
+
+        # ----------------------------------------- peer comparison --
+        # Normalise bank + peers to 100 at the start of the visible range
+        peer_cols, info_col = st.columns([2.2, 1])
+
+        with peer_cols:
+            weekly_stock = (
+                filtered_stock.set_index("date")["close"]
+                .resample("W-FRI")
+                .last()
+                .dropna()
+                .reset_index()
+            )
+            if not weekly_stock.empty:
+                base_price = weekly_stock["close"].iloc[0]
+                bank_norm = weekly_stock.copy()
+                bank_norm["time"]  = bank_norm["date"].dt.strftime("%Y-%m-%d")
+                bank_norm["value"] = (bank_norm["close"] / base_price * 100).round(2)
+                bank_series = bank_norm[["time", "value"]].to_dict("records")
+
+                # Slice peer data to the same date range
+                overlay_list: list[dict] = []
+                peer_colors = {"Peer A": "#C9A227", "Peer B": "#C0392B", "Peer C": "#6FA8C9"}
+                for peer_name, peer_df in peer_map.items():
+                    sliced = peer_df[
+                        (peer_df["time"] >= ts_start.strftime("%Y-%m-%d"))
+                        & (peer_df["time"] <= ts_end.strftime("%Y-%m-%d"))
+                    ].copy()
+                    if sliced.empty:
+                        continue
+                    base_val = sliced["value"].iloc[0]
+                    sliced["value"] = (sliced["value"] / base_val * 100).round(2)
+                    overlay_list.append({
+                        "name":  peer_name,
+                        "color": peer_colors.get(peer_name, "#888"),
+                        "data":  sliced[["time", "value"]].to_dict("records"),
+                    })
+
+                st.markdown("**Relative performance vs peers (indexed to 100)**")
+                st_tv_chart(
+                    bank_series,
+                    overlays=overlay_list,
+                    chart_type="area",
+                    height=280,
+                    colors={"line": "#0F4C81"},
+                    key="tv_peers",
+                )
+
+        with info_col:
+            st.markdown("**Market snapshot**")
+            snap = {
+                "Metric": [
+                    "Share price",
+                    "Day change",
+                    "YTD return",
+                    "52-wk high",
+                    "52-wk low",
+                    "P/E ratio",
+                    "Div yield",
+                    "EPS (period)",
+                ],
+                "Value": [
+                    f"A${latest_close:.2f}",
+                    f"{day_chg_pct:+.2f}%",
+                    f"{ytd_pct:+.1f}%",
+                    f"A${filtered_stock['high'].max():.2f}",
+                    f"A${filtered_stock['low'].min():.2f}",
+                    f"{pe_ratio:.1f}×",
+                    f"{div_yield:.2f}%",
+                    f"A${eps:.4f}",
+                ],
+            }
+            st.dataframe(
+                snap,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Metric": st.column_config.TextColumn("Metric", width="medium"),
+                    "Value":  st.column_config.TextColumn("Value",  width="small"),
+                },
+            )
+
+        st.caption(
+            "All share price data is synthetically generated for this demo and does not represent "
+            "the actual trading history of any listed security. Peer returns are also illustrative."
+        )
+
+else:  # Data & Export
+    st.caption("Group by a dimension for a quick pivot, or scroll the full filtered dataset below. Select rows to filter the rest of the page.")
+    pivot_dim = st.selectbox("Group by", options=["segment", "region", "half"], format_func=str.title)
     pivot = (
         filtered_df.groupby(pivot_dim, as_index=False)
         .agg(operating_income=("operating_income", "sum"), cash_npat=("cash_npat", "sum"),
