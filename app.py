@@ -22,13 +22,13 @@ import streamlit as st
 from components import charts_alt as C
 from components.kpi_tiles import render_kpi_row
 from components.tv_chart import st_tv_chart
+from utils import presets as presets_mod
 from data.generate import (
-    SHARES_OUTSTANDING,
     PAYOUT_RATIO,
+    SHARES_OUTSTANDING,
     generate_dataset,
     generate_peer_data,
     generate_stock_data,
-    get_halves,
 )
 from utils import state
 from utils.export import build_csv_bytes, build_excel_bytes
@@ -133,6 +133,59 @@ with reset:
         st.rerun()
 state.sync_after_widgets()
 
+# ------------------------------------------------------- saved views row --
+_PLACEHOLDER = "— Load a saved view —"
+_preset_widget_key = f"_preset_sel_{st.session_state.get('_preset_reset_ctr', 0)}"
+_presets = presets_mod.load_presets()
+_preset_names = list(_presets.keys())
+
+pv1, pv2, pv3, pv4 = st.columns([1.8, 1.6, 0.65, 0.65], vertical_alignment="bottom")
+with pv1:
+    _chosen = st.selectbox(
+        "Saved views",
+        [_PLACEHOLDER] + _preset_names,
+        key=_preset_widget_key,
+        label_visibility="collapsed",
+    )
+with pv2:
+    _new_name = st.text_input(
+        "View name",
+        placeholder="Name this view…",
+        key="_preset_name",
+        label_visibility="collapsed",
+    )
+with pv3:
+    if st.button("💾 Save", use_container_width=True, disabled=not _new_name.strip()):
+        _date_val = st.session_state[state.DATE_KEY]
+        _ds, _de = (str(_date_val[0]), str(_date_val[1])) if isinstance(_date_val, tuple) and len(_date_val) == 2 else (str(_date_val), str(_date_val))
+        presets_mod.save_preset(_new_name.strip(), {
+            "date_start":  _ds,
+            "date_end":    _de,
+            "segments":    list(st.session_state[state.SEGMENTS_KEY]),
+            "regions":     list(st.session_state[state.REGIONS_KEY]),
+            "department":  list(st.session_state[state.DEPARTMENT_KEY]),
+            "scenario":    st.session_state[state.SCENARIO_KEY],
+            "compare":     st.session_state[state.COMPARE_KEY],
+        })
+        st.session_state["_preset_applied"] = _new_name.strip()
+        st.toast(f'View "{_new_name.strip()}" saved', icon="✅")
+        st.rerun()
+with pv4:
+    _can_delete = _chosen != _PLACEHOLDER and _chosen in _presets
+    if st.button("🗑️ Delete", use_container_width=True, disabled=not _can_delete):
+        presets_mod.delete_preset(_chosen)
+        st.session_state["_preset_reset_ctr"] = st.session_state.get("_preset_reset_ctr", 0) + 1
+        st.session_state.pop("_preset_applied", None)
+        st.toast(f'View "{_chosen}" deleted')
+        st.rerun()
+
+# Apply preset if the user selected a new one
+if _chosen != _PLACEHOLDER and st.session_state.get("_preset_applied") != _chosen:
+    if _chosen in _presets:
+        state.apply_preset(_presets[_chosen])
+        st.session_state["_preset_applied"] = _chosen
+        st.rerun()
+
 chips = state.active_filter_chips(DEFAULT_START, DEFAULT_END)
 if chips:
     st.markdown('<div class="chip-row">', unsafe_allow_html=True)
@@ -158,25 +211,40 @@ if filtered_df.empty:
     state.sync_url()
     st.stop()
 
-# ---------------------------------------------------------------- kpi row --
-render_kpi_row(filtered_df, prior_df, trend_df, active_view_key="active_view")
+segments_sel = st.session_state[state.SEGMENTS_KEY]
+regions_sel = st.session_state[state.REGIONS_KEY]
+department_sel = st.session_state[state.DEPARTMENT_KEY]
 
-st.write("")
-active_view = st.segmented_control(
-    "View",
-    options=["Overview", "Profitability", "Balance Sheet", "Segments", "Market View", "Data & Export"],
-    key="active_view",
-    label_visibility="collapsed",
-)
-st.write("")
+# ----------------------------------------------------------------- KPI row --
+render_kpi_row(filtered_df, compare_df, trend_df, compare_label=compare_label)
 
-# ------------------------------------------------------------------- views --
-if active_view == "Overview":
-    c1, c2 = st.columns([1.3, 1])
-    with c1:
-        fig = charts.half_trend_bar(trend_df, st.session_state[state.HALF_KEY])
-        event = st.plotly_chart(fig, on_select="rerun", selection_mode="points", key="half_chart_overview", use_container_width=True)
-        if state.handle_half_click(event, halves):
+# ------------------------------------------------------------- chart grid --
+row1_a, row1_b = st.columns(2, gap="medium")
+with row1_a:
+    drilled = len(segments_sel) == 1
+    if drilled:
+        drill_title = f"Operating income by department — {segments_sel[0]}"
+        drill_hint = "Click a bar to filter that department"
+    else:
+        drill_title = "Operating income by segment"
+        drill_hint = "+ click a bar to drill in"
+    with card(drill_title, drill_hint, owns=("department" if drilled else "segments")):
+        if drilled and st.button("− Back to segments", key="drill_up"):
+            state.drill_up()
+            st.rerun()
+        df_top = state.apply_filters_excluding(df, "segments")
+        df_drilled = state.apply_filters_excluding(df, "department")
+        chart, param, dim = C.segment_department_drill(df_top, df_drilled, segments_sel, department_sel)
+        level_key = state.drill_chart_key(dim)
+        master_key = state.SEGMENTS_KEY if dim == "segment" else state.DEPARTMENT_KEY
+        ev = st.altair_chart(chart, on_select="rerun", key=level_key, use_container_width=True)
+        if state.handle_altair_select(ev, param, dim, master_key, level_key):
+            st.rerun()
+with row1_b:
+    with card("Actual vs budget by segment", "Gap = variance · click a dot to filter", owns="segments"):
+        chart, param = C.segment_dumbbell(state.apply_filters_excluding(df, "segments"), budget_df, segments_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("dumbbell"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("dumbbell")):
             st.rerun()
 
 row2_a, row2_b = st.columns(2, gap="medium")
@@ -204,8 +272,8 @@ with row3_b:
     with card("Profitability bridge", "Operating income to Cash NPAT"):
         st.altair_chart(C.pnl_waterfall(filtered_df), use_container_width=True)
 
-elif active_view == "Market View":
-    # ---------------------------------------------------------------- stock data --
+# ----------------------------------------------------------- market view --
+with st.expander("📈 Market View — share price & peer comparison", expanded=False):
     stock_df = generate_stock_data()
     peer_map = generate_peer_data()
 
@@ -217,24 +285,21 @@ elif active_view == "Market View":
         (stock_df["date"] >= ts_start) & (stock_df["date"] <= ts_end)
     ].copy()
 
-    # ----------------------------------------------------------- market KPIs --
+    # Market KPIs
     latest_close = filtered_stock["close"].iloc[-1] if not filtered_stock.empty else 0.0
     prev_close   = filtered_stock["close"].iloc[-2] if len(filtered_stock) > 1 else latest_close
     day_chg_pct  = (latest_close - prev_close) / prev_close * 100 if prev_close else 0.0
 
-    # YTD: compare to close on the first trading day of the current calendar year
-    ytd_start_year = ts_end.year
-    ytd_base_df = stock_df[stock_df["date"].dt.year == ytd_start_year]
-    ytd_base = ytd_base_df["close"].iloc[0] if not ytd_base_df.empty else latest_close
-    ytd_pct = (latest_close - ytd_base) / ytd_base * 100 if ytd_base else 0.0
+    ytd_base_df = stock_df[stock_df["date"].dt.year == ts_end.year]
+    ytd_base    = ytd_base_df["close"].iloc[0] if not ytd_base_df.empty else latest_close
+    ytd_pct     = (latest_close - ytd_base) / ytd_base * 100 if ytd_base else 0.0
 
-    # Earnings-derived: use filtered_df (the earnings data for the period)
     actual_earnings = filtered_df[filtered_df["scenario"] == "Actual"]
     annual_npat = actual_earnings["cash_npat"].sum()
-    eps = annual_npat / SHARES_OUTSTANDING
-    pe_ratio = latest_close / eps if eps > 0 else 0.0
-    dps = eps * PAYOUT_RATIO
-    div_yield = dps / latest_close * 100 if latest_close > 0 else 0.0
+    eps         = annual_npat / SHARES_OUTSTANDING
+    pe_ratio    = latest_close / eps if eps > 0 else 0.0
+    dps         = eps * PAYOUT_RATIO
+    div_yield   = dps / latest_close * 100 if latest_close > 0 else 0.0
 
     mk1, mk2, mk3, mk4, mk5 = st.columns(5)
     with mk1:
@@ -250,7 +315,6 @@ elif active_view == "Market View":
 
     st.write("")
 
-    # ------------------------------------------------ candlestick + volume --
     if filtered_stock.empty:
         st.info("No stock data for the selected date range.")
     else:
@@ -260,36 +324,23 @@ elif active_view == "Market View":
         vol_data    = ohlcv[["time", "volume"]].rename(columns={"volume": "value"}).to_dict("records")
 
         st.markdown("**Share price — daily OHLCV**")
-        st_tv_chart(
-            series_data,
-            volume_data=vol_data,
-            chart_type="candlestick",
-            height=430,
-            key="tv_candle",
-        )
+        st_tv_chart(series_data, volume_data=vol_data, chart_type="candlestick", height=430, key="tv_candle")
 
         st.write("")
-
-        # ----------------------------------------- peer comparison --
-        # Normalise bank + peers to 100 at the start of the visible range
         peer_cols, info_col = st.columns([2.2, 1])
 
         with peer_cols:
             weekly_stock = (
                 filtered_stock.set_index("date")["close"]
-                .resample("W-FRI")
-                .last()
-                .dropna()
-                .reset_index()
+                .resample("W-FRI").last().dropna().reset_index()
             )
             if not weekly_stock.empty:
-                base_price = weekly_stock["close"].iloc[0]
-                bank_norm = weekly_stock.copy()
+                base_price  = weekly_stock["close"].iloc[0]
+                bank_norm   = weekly_stock.copy()
                 bank_norm["time"]  = bank_norm["date"].dt.strftime("%Y-%m-%d")
                 bank_norm["value"] = (bank_norm["close"] / base_price * 100).round(2)
                 bank_series = bank_norm[["time", "value"]].to_dict("records")
 
-                # Slice peer data to the same date range
                 overlay_list: list[dict] = []
                 peer_colors = {"Peer A": "#C9A227", "Peer B": "#C0392B", "Peer C": "#6FA8C9"}
                 for peer_name, peer_df in peer_map.items():
@@ -308,41 +359,21 @@ elif active_view == "Market View":
                     })
 
                 st.markdown("**Relative performance vs peers (indexed to 100)**")
-                st_tv_chart(
-                    bank_series,
-                    overlays=overlay_list,
-                    chart_type="area",
-                    height=280,
-                    colors={"line": "#0F4C81"},
-                    key="tv_peers",
-                )
+                st_tv_chart(bank_series, overlays=overlay_list, chart_type="area",
+                            height=280, colors={"line": "#0F4C81"}, key="tv_peers")
 
         with info_col:
             st.markdown("**Market snapshot**")
-            snap = {
-                "Metric": [
-                    "Share price",
-                    "Day change",
-                    "YTD return",
-                    "52-wk high",
-                    "52-wk low",
-                    "P/E ratio",
-                    "Div yield",
-                    "EPS (period)",
-                ],
-                "Value": [
-                    f"A${latest_close:.2f}",
-                    f"{day_chg_pct:+.2f}%",
-                    f"{ytd_pct:+.1f}%",
-                    f"A${filtered_stock['high'].max():.2f}",
-                    f"A${filtered_stock['low'].min():.2f}",
-                    f"{pe_ratio:.1f}×",
-                    f"{div_yield:.2f}%",
-                    f"A${eps:.4f}",
-                ],
-            }
             st.dataframe(
-                snap,
+                {
+                    "Metric": ["Share price", "Day change", "YTD return",
+                               "52-wk high", "52-wk low", "P/E ratio", "Div yield", "EPS"],
+                    "Value":  [
+                        f"A${latest_close:.2f}", f"{day_chg_pct:+.2f}%", f"{ytd_pct:+.1f}%",
+                        f"A${filtered_stock['high'].max():.2f}", f"A${filtered_stock['low'].min():.2f}",
+                        f"{pe_ratio:.1f}×", f"{div_yield:.2f}%", f"A${eps:.4f}",
+                    ],
+                },
                 hide_index=True,
                 use_container_width=True,
                 column_config={
@@ -356,9 +387,9 @@ elif active_view == "Market View":
             "the actual trading history of any listed security. Peer returns are also illustrative."
         )
 
-else:  # Data & Export
-    st.caption("Group by a dimension for a quick pivot, or scroll the full filtered dataset below. Select rows to filter the rest of the page.")
-    pivot_dim = st.selectbox("Group by", options=["segment", "region", "half"], format_func=str.title)
+# ------------------------------------------------------- detail + export --
+with st.expander("Data & export", expanded=False):
+    pivot_dim = st.selectbox("Group by", ["segment", "department", "region", "half"], format_func=str.title)
     pivot = (
         filtered_df.groupby(pivot_dim, as_index=False)
         .agg(operating_income=("operating_income", "sum"), cash_npat=("cash_npat", "sum"),
