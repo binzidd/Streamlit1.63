@@ -1,238 +1,204 @@
-"""Pulse -- a click-to-filter bank earnings dashboard.
+"""Pulse -- a single-page, click-to-filter bank earnings dashboard.
 
-Built to exercise Streamlit 1.63 features (st.plotly_chart selection events,
-st.dataframe row selection, st.segmented_control, bordered containers,
-column_config) around a synthetic bank-earnings dataset in the shape of a
-retail/business/institutional bank with a New Zealand arm.
+Everything lives on one page: no tab navigation, no hunting across subject
+areas. A KPI strip up top, then a grid of charts, every one of which is a
+filter -- click a heatmap cell, a dumbbell, a variance bar, a bubble or a
+small-multiple and the whole page recomputes around it.
+
+Charts are native Altair via st.altair_chart(on_select="rerun") rather than
+Plotly: Streamlit's selection bridge actually reports Altair selection
+params, which is what makes "every chart is a filter" possible here.
 
 All figures are randomly generated and illustrative only -- this is a demo
 of Streamlit interactivity, not a real financial report.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pandas as pd
 import streamlit as st
 
-from components import charts
+from components import charts_alt as C
 from components.kpi_tiles import render_kpi_row
 from components.tv_chart import st_tv_chart
 from data.generate import (
-    SHARES_OUTSTANDING,
     PAYOUT_RATIO,
+    SHARES_OUTSTANDING,
     generate_dataset,
     generate_peer_data,
     generate_stock_data,
-    get_halves,
 )
 from utils import state
-from utils.export import build_excel_bytes
+from utils.export import build_csv_bytes, build_excel_bytes
 
-st.set_page_config(page_title="Pulse — Bank Earnings Dashboard", page_icon="🏦", layout="wide")
+st.set_page_config(page_title="Pulse — Bank Earnings", page_icon="🏦", layout="wide")
 
-# ---------------------------------------------------------------- styling --
 st.markdown(
     """
     <style>
-    .block-container { padding-top: 1.6rem; max-width: 1300px; }
-    div[data-testid="stMetric"] { background: white; }
+    .block-container { padding-top: 2.6rem; padding-bottom: 1rem; max-width: 1500px; }
     .chip-row button {
         border-radius: 999px !important;
-        padding: 0.15rem 0.8rem !important;
-        font-size: 0.78rem !important;
-        border: 1px solid #D7DEE6 !important;
-        background: #F4F6F8 !important;
-        color: #1A1D21 !important;
+        padding: 0.05rem 0.7rem !important;
+        font-size: 0.75rem !important;
+        border: 1px solid #d7dee6 !important;
+        background: #f4f6f8 !important;
+        color: #0b0b0b !important;
     }
-    div[data-testid="stContainer"]:has(> div > div > div[data-testid="stCaptionContainer"]) {
-        transition: box-shadow 0.15s ease;
-    }
-    .pulse-header-title { font-size: 1.9rem; font-weight: 800; color: #0F4C81; margin-bottom: -0.3rem; }
-    .pulse-disclaimer { color: #6B7280; font-size: 0.8rem; }
+    .pulse-title { font-size: 1.45rem; font-weight: 800; color: #0b0b0b; margin-bottom: -0.1rem; }
+    .pulse-sub { color: #898781; font-size: 0.74rem; }
+    .pulse-card-title { font-size: 0.82rem; font-weight: 700; color: #0b0b0b;
+                        letter-spacing: 0.01em; line-height: 1.35; }
+    .pulse-card-hint { font-size: 0.68rem; color: #898781; line-height: 1.35;
+                       margin-bottom: 0.2rem; }
+    .pulse-card-hint.is-filtered { color: #2a78d6; font-weight: 600; }
+    div[data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 1.1rem; }
+    div[data-testid="stFullScreenFrame"] { overflow-x: auto; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
+
+@contextmanager
+def card(title: str, hint: str = "", owns: str | None = None):
+    with st.container(border=True):
+        st.markdown(f'<div class="pulse-card-title">{title}</div>', unsafe_allow_html=True)
+        ctx = state.filter_summary(exclude=owns)
+        if ctx:
+            st.markdown(f'<div class="pulse-card-hint is-filtered">Filtered to {ctx}</div>', unsafe_allow_html=True)
+        if hint:
+            st.markdown(f'<div class="pulse-card-hint">{hint}</div>', unsafe_allow_html=True)
+        yield
+
+
 # -------------------------------------------------------------------- data --
 df = generate_dataset()
-halves = get_halves(df)
 
 max_date = df["date"].max()
 DEFAULT_END = max_date.date()
 DEFAULT_START = (max_date - pd.DateOffset(months=11)).date()
-DATA_MIN = df["date"].min().date()
-DATA_MAX = df["date"].max().date()
+DATA_MIN, DATA_MAX = df["date"].min().date(), df["date"].max().date()
 
-state.init_state(DEFAULT_START, DEFAULT_END)
-st.session_state.setdefault("active_view", "Overview")
+state.init_state(DEFAULT_START, DEFAULT_END, DATA_MIN, DATA_MAX)
 
-# ------------------------------------------------------------------ header --
-left, right = st.columns([3, 1])
-with left:
-    st.markdown('<div class="pulse-header-title">Pulse — Group Earnings Dashboard</div>', unsafe_allow_html=True)
+# ------------------------------------------------------- header + filters --
+head, f1, f2, f3, reset = st.columns([2.6, 1.5, 0.9, 1.1, 0.8], vertical_alignment="bottom")
+with head:
+    st.markdown('<div class="pulse-title">Pulse — Group Earnings</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="pulse-disclaimer">Illustrative synthetic data generated for a Streamlit 1.63 feature demo. '
-        "Not the real reported results of any institution. Click the period chart, a table row, or a dropdown to filter the whole page.</div>",
+        '<div class="pulse-sub">Illustrative synthetic data. Every chart is a filter — click any mark.</div>',
         unsafe_allow_html=True,
     )
-with right:
-    st.write("")
-    if st.button("↺ Reset all filters", use_container_width=True):
+
+state.sync_before_widgets()
+with f1:
+    st.date_input("Period", value=st.session_state[state.DATE_KEY], min_value=DATA_MIN, max_value=DATA_MAX,
+                  key=state.WIDGET_KEYS[state.DATE_KEY], label_visibility="collapsed")
+with f2:
+    _scenarios = ["Actual", "Budget"]
+    st.selectbox("Scenario", _scenarios, index=_scenarios.index(st.session_state[state.SCENARIO_KEY]),
+                 key=state.WIDGET_KEYS[state.SCENARIO_KEY], label_visibility="collapsed")
+with f3:
+    st.selectbox("Compare To", state.COMPARE_OPTIONS,
+                 index=state.COMPARE_OPTIONS.index(st.session_state[state.COMPARE_KEY]),
+                 key=state.WIDGET_KEYS[state.COMPARE_KEY], label_visibility="collapsed",
+                 help="What the KPI deltas are measured against.")
+with reset:
+    if st.button("↺ Reset", use_container_width=True):
         state.reset_filters(DEFAULT_START, DEFAULT_END)
         st.rerun()
-
-st.divider()
-
-# ------------------------------------------------------------- filter strip --
-state.sync_before_widgets()
-
-f1, f2, f3, f4 = st.columns([1.6, 1.4, 1.4, 1])
-with f1:
-    st.date_input(
-        "Period",
-        value=st.session_state[state.DATE_KEY],
-        min_value=DATA_MIN,
-        max_value=DATA_MAX,
-        key=state.WIDGET_KEYS[state.DATE_KEY],
-    )
-with f2:
-    st.multiselect(
-        "Segment",
-        options=state.ALL_SEGMENTS,
-        default=st.session_state[state.SEGMENTS_KEY],
-        key=state.WIDGET_KEYS[state.SEGMENTS_KEY],
-    )
-with f3:
-    st.multiselect(
-        "Region",
-        options=state.ALL_REGIONS,
-        default=st.session_state[state.REGIONS_KEY],
-        key=state.WIDGET_KEYS[state.REGIONS_KEY],
-    )
-with f4:
-    _scenario_options = ["Actual", "Budget"]
-    st.selectbox(
-        "Scenario",
-        options=_scenario_options,
-        index=_scenario_options.index(st.session_state[state.SCENARIO_KEY]),
-        key=state.WIDGET_KEYS[state.SCENARIO_KEY],
-    )
-
 state.sync_after_widgets()
 
 chips = state.active_filter_chips(DEFAULT_START, DEFAULT_END)
 if chips:
     st.markdown('<div class="chip-row">', unsafe_allow_html=True)
-    chip_cols = st.columns(len(chips) + 2)
+    chip_cols = st.columns(min(len(chips), 6) + 3)
     for c, (label, clear_fn) in zip(chip_cols, chips):
         if c.button(f"{label}  ✕", key=f"chip_{label}"):
             clear_fn()
             st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ------------------------------------------------------------- apply filters --
+# ------------------------------------------------------------ filtered data --
 filtered_df = state.apply_filters(df)
-prior_df = state.prior_period_df(df)
 trend_df = state.dim_filtered(df)
+budget_df = state.budget_period_df(df)
+
+if st.session_state[state.COMPARE_KEY] == "Budget":
+    compare_df, compare_label = budget_df, "budget"
+else:
+    compare_df, compare_label = state.prior_period_df(df), "prior period"
 
 if filtered_df.empty:
-    st.warning("No data matches the current filter combination. Try clearing a filter above.")
+    st.warning("No data matches the current filters. Clear a chip above to get back.")
+    state.sync_url()
     st.stop()
 
-# ---------------------------------------------------------------- kpi row --
-render_kpi_row(filtered_df, prior_df, trend_df, active_view_key="active_view")
+segments_sel = st.session_state[state.SEGMENTS_KEY]
+regions_sel = st.session_state[state.REGIONS_KEY]
+department_sel = st.session_state[state.DEPARTMENT_KEY]
 
-st.write("")
-active_view = st.segmented_control(
-    "View",
-    options=["Overview", "Profitability", "Balance Sheet", "Segments", "Market View", "Data & Export"],
-    key="active_view",
-    label_visibility="collapsed",
-)
-st.write("")
+# ----------------------------------------------------------------- KPI row --
+render_kpi_row(filtered_df, compare_df, trend_df, compare_label=compare_label)
 
-# ------------------------------------------------------------------- views --
-if active_view == "Overview":
-    c1, c2 = st.columns([1.3, 1])
-    with c1:
-        fig = charts.half_trend_bar(trend_df, st.session_state[state.HALF_KEY])
-        event = st.plotly_chart(fig, on_select="rerun", selection_mode="points", key="half_chart_overview", use_container_width=True)
-        if state.handle_half_click(event, halves):
+# ------------------------------------------------------------- chart grid --
+row1_a, row1_b = st.columns(2, gap="medium")
+with row1_a:
+    drilled = len(segments_sel) == 1
+    if drilled:
+        drill_title = f"Operating income by department — {segments_sel[0]}"
+        drill_hint = "Click a bar to filter that department"
+    else:
+        drill_title = "Operating income by segment"
+        drill_hint = "+ click a bar to drill in"
+    with card(drill_title, drill_hint, owns=("department" if drilled else "segments")):
+        if drilled and st.button("− Back to segments", key="drill_up"):
+            state.drill_up()
             st.rerun()
-    with c2:
-        st.plotly_chart(charts.segment_bar(filtered_df), use_container_width=True, config={"displayModeBar": False})
+        df_top = state.apply_filters_excluding(df, "segments")
+        df_drilled = state.apply_filters_excluding(df, "department")
+        chart, param, dim = C.segment_department_drill(df_top, df_drilled, segments_sel, department_sel)
+        level_key = state.drill_chart_key(dim)
+        master_key = state.SEGMENTS_KEY if dim == "segment" else state.DEPARTMENT_KEY
+        ev = st.altair_chart(chart, on_select="rerun", key=level_key, use_container_width=True)
+        if state.handle_altair_select(ev, param, dim, master_key, level_key):
+            st.rerun()
+with row1_b:
+    with card("Actual vs budget by segment", "Gap = variance · click a dot to filter", owns="segments"):
+        chart, param = C.segment_dumbbell(state.apply_filters_excluding(df, "segments"), budget_df, segments_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("dumbbell"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("dumbbell")):
+            st.rerun()
 
-    st.plotly_chart(charts.region_bar(filtered_df), use_container_width=True, config={"displayModeBar": False})
+row2_a, row2_b = st.columns(2, gap="medium")
+with row2_a:
+    with card("Variance to budget by region", "Click a bar to filter that region", owns="regions"):
+        chart, param = C.region_variance(state.apply_filters_excluding(df, "regions"), budget_df, regions_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("variance"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "region", state.REGIONS_KEY, state.chart_key("variance")):
+            st.rerun()
+with row2_b:
+    with card("Margin vs efficiency", "Bubble = operating income · click to filter segment", owns="segments"):
+        chart, param = C.margin_scatter(state.apply_filters_excluding(df, "segments"), segments_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("scatter"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("scatter")):
+            st.rerun()
 
-    st.plotly_chart(charts.income_statement_sankey(filtered_df), use_container_width=True, config={"displayModeBar": False})
+row3_a, row3_b = st.columns(2, gap="medium")
+with row3_a:
+    with card("Cash NPAT trend by segment", "Click a panel to filter that segment", owns="segments"):
+        chart, param = C.trend_facets(state.dim_filtered_excluding(df, "segments"), segments_sel)
+        ev = st.altair_chart(chart, on_select="rerun", key=state.chart_key("facets"), use_container_width=True)
+        if state.handle_altair_select(ev, param, "segment", state.SEGMENTS_KEY, state.chart_key("facets")):
+            st.rerun()
+with row3_b:
+    with card("Profitability bridge", "Operating income to Cash NPAT"):
+        st.altair_chart(C.pnl_waterfall(filtered_df), use_container_width=True)
 
-elif active_view == "Profitability":
-    c1, c2 = st.columns(2)
-    with c1:
-        st.plotly_chart(charts.ratio_line(filtered_df, "nim", "Net Interest Margin", target=0.020), use_container_width=True, config={"displayModeBar": False})
-    with c2:
-        st.plotly_chart(charts.ratio_line(filtered_df, "cti", "Cost-to-Income Ratio", target=0.42), use_container_width=True, config={"displayModeBar": False})
-
-    st.plotly_chart(
-        charts.dual_line(
-            filtered_df,
-            cols=["operating_income", "operating_expenses"],
-            names=["Operating Income", "Operating Expenses"],
-            colors=[charts.NAVY, charts.RED],
-            title="Operating income vs. expenses",
-            y_title="A$",
-        ),
-        use_container_width=True,
-        config={"displayModeBar": False},
-    )
-
-    fig = charts.half_trend_bar(trend_df, st.session_state[state.HALF_KEY], metric="loan_impairment_expense", label="Loan Impairment Expense")
-    event = st.plotly_chart(fig, on_select="rerun", selection_mode="points", key="half_chart_profit", use_container_width=True)
-    if state.handle_half_click(event, halves):
-        st.rerun()
-
-elif active_view == "Balance Sheet":
-    st.plotly_chart(charts.stacked_balance_area(filtered_df), use_container_width=True, config={"displayModeBar": False})
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.plotly_chart(charts.segment_bar(filtered_df, metric="gross_loans", label="Gross Loans"), use_container_width=True, config={"displayModeBar": False})
-    with c2:
-        st.plotly_chart(charts.region_bar(filtered_df, metric="deposits", label="Deposits"), use_container_width=True, config={"displayModeBar": False})
-
-elif active_view == "Segments":
-    st.plotly_chart(charts.segment_region_treemap(filtered_df), use_container_width=True, config={"displayModeBar": False})
-
-    summary = (
-        filtered_df.groupby("segment", as_index=False)
-        .agg(
-            operating_income=("operating_income", "sum"),
-            cash_npat=("cash_npat", "sum"),
-            loan_impairment_expense=("loan_impairment_expense", "sum"),
-            net_new_customers=("net_new_customers", "sum"),
-        )
-        .sort_values("cash_npat", ascending=False)
-    )
-    event = st.dataframe(
-        summary,
-        hide_index=True,
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode="multi-row",
-        key="segment_table",
-        column_config={
-            "segment": "Segment",
-            "operating_income": st.column_config.NumberColumn("Operating Income", format="A$%.0f"),
-            "cash_npat": st.column_config.NumberColumn("Cash NPAT", format="A$%.0f"),
-            "loan_impairment_expense": st.column_config.NumberColumn("Loan Impairment Exp.", format="A$%.0f"),
-            "net_new_customers": st.column_config.NumberColumn("Net New Customers", format="%d"),
-        },
-    )
-    if state.handle_table_selection(event, summary, "segment", state.SEGMENTS_KEY):
-        st.rerun()
-
-elif active_view == "Market View":
-    # ---------------------------------------------------------------- stock data --
+# ----------------------------------------------------------- market view --
+with st.expander("📈 Market View — share price & peer comparison", expanded=False):
     stock_df = generate_stock_data()
     peer_map = generate_peer_data()
 
@@ -244,24 +210,21 @@ elif active_view == "Market View":
         (stock_df["date"] >= ts_start) & (stock_df["date"] <= ts_end)
     ].copy()
 
-    # ----------------------------------------------------------- market KPIs --
+    # Market KPIs
     latest_close = filtered_stock["close"].iloc[-1] if not filtered_stock.empty else 0.0
     prev_close   = filtered_stock["close"].iloc[-2] if len(filtered_stock) > 1 else latest_close
     day_chg_pct  = (latest_close - prev_close) / prev_close * 100 if prev_close else 0.0
 
-    # YTD: compare to close on the first trading day of the current calendar year
-    ytd_start_year = ts_end.year
-    ytd_base_df = stock_df[stock_df["date"].dt.year == ytd_start_year]
-    ytd_base = ytd_base_df["close"].iloc[0] if not ytd_base_df.empty else latest_close
-    ytd_pct = (latest_close - ytd_base) / ytd_base * 100 if ytd_base else 0.0
+    ytd_base_df = stock_df[stock_df["date"].dt.year == ts_end.year]
+    ytd_base    = ytd_base_df["close"].iloc[0] if not ytd_base_df.empty else latest_close
+    ytd_pct     = (latest_close - ytd_base) / ytd_base * 100 if ytd_base else 0.0
 
-    # Earnings-derived: use filtered_df (the earnings data for the period)
     actual_earnings = filtered_df[filtered_df["scenario"] == "Actual"]
     annual_npat = actual_earnings["cash_npat"].sum()
-    eps = annual_npat / SHARES_OUTSTANDING
-    pe_ratio = latest_close / eps if eps > 0 else 0.0
-    dps = eps * PAYOUT_RATIO
-    div_yield = dps / latest_close * 100 if latest_close > 0 else 0.0
+    eps         = annual_npat / SHARES_OUTSTANDING
+    pe_ratio    = latest_close / eps if eps > 0 else 0.0
+    dps         = eps * PAYOUT_RATIO
+    div_yield   = dps / latest_close * 100 if latest_close > 0 else 0.0
 
     mk1, mk2, mk3, mk4, mk5 = st.columns(5)
     with mk1:
@@ -277,7 +240,6 @@ elif active_view == "Market View":
 
     st.write("")
 
-    # ------------------------------------------------ candlestick + volume --
     if filtered_stock.empty:
         st.info("No stock data for the selected date range.")
     else:
@@ -287,36 +249,23 @@ elif active_view == "Market View":
         vol_data    = ohlcv[["time", "volume"]].rename(columns={"volume": "value"}).to_dict("records")
 
         st.markdown("**Share price — daily OHLCV**")
-        st_tv_chart(
-            series_data,
-            volume_data=vol_data,
-            chart_type="candlestick",
-            height=430,
-            key="tv_candle",
-        )
+        st_tv_chart(series_data, volume_data=vol_data, chart_type="candlestick", height=430, key="tv_candle")
 
         st.write("")
-
-        # ----------------------------------------- peer comparison --
-        # Normalise bank + peers to 100 at the start of the visible range
         peer_cols, info_col = st.columns([2.2, 1])
 
         with peer_cols:
             weekly_stock = (
                 filtered_stock.set_index("date")["close"]
-                .resample("W-FRI")
-                .last()
-                .dropna()
-                .reset_index()
+                .resample("W-FRI").last().dropna().reset_index()
             )
             if not weekly_stock.empty:
-                base_price = weekly_stock["close"].iloc[0]
-                bank_norm = weekly_stock.copy()
+                base_price  = weekly_stock["close"].iloc[0]
+                bank_norm   = weekly_stock.copy()
                 bank_norm["time"]  = bank_norm["date"].dt.strftime("%Y-%m-%d")
                 bank_norm["value"] = (bank_norm["close"] / base_price * 100).round(2)
                 bank_series = bank_norm[["time", "value"]].to_dict("records")
 
-                # Slice peer data to the same date range
                 overlay_list: list[dict] = []
                 peer_colors = {"Peer A": "#C9A227", "Peer B": "#C0392B", "Peer C": "#6FA8C9"}
                 for peer_name, peer_df in peer_map.items():
@@ -335,41 +284,21 @@ elif active_view == "Market View":
                     })
 
                 st.markdown("**Relative performance vs peers (indexed to 100)**")
-                st_tv_chart(
-                    bank_series,
-                    overlays=overlay_list,
-                    chart_type="area",
-                    height=280,
-                    colors={"line": "#0F4C81"},
-                    key="tv_peers",
-                )
+                st_tv_chart(bank_series, overlays=overlay_list, chart_type="area",
+                            height=280, colors={"line": "#0F4C81"}, key="tv_peers")
 
         with info_col:
             st.markdown("**Market snapshot**")
-            snap = {
-                "Metric": [
-                    "Share price",
-                    "Day change",
-                    "YTD return",
-                    "52-wk high",
-                    "52-wk low",
-                    "P/E ratio",
-                    "Div yield",
-                    "EPS (period)",
-                ],
-                "Value": [
-                    f"A${latest_close:.2f}",
-                    f"{day_chg_pct:+.2f}%",
-                    f"{ytd_pct:+.1f}%",
-                    f"A${filtered_stock['high'].max():.2f}",
-                    f"A${filtered_stock['low'].min():.2f}",
-                    f"{pe_ratio:.1f}×",
-                    f"{div_yield:.2f}%",
-                    f"A${eps:.4f}",
-                ],
-            }
             st.dataframe(
-                snap,
+                {
+                    "Metric": ["Share price", "Day change", "YTD return",
+                               "52-wk high", "52-wk low", "P/E ratio", "Div yield", "EPS"],
+                    "Value":  [
+                        f"A${latest_close:.2f}", f"{day_chg_pct:+.2f}%", f"{ytd_pct:+.1f}%",
+                        f"A${filtered_stock['high'].max():.2f}", f"A${filtered_stock['low'].min():.2f}",
+                        f"{pe_ratio:.1f}×", f"{div_yield:.2f}%", f"A${eps:.4f}",
+                    ],
+                },
                 hide_index=True,
                 use_container_width=True,
                 column_config={
@@ -383,23 +312,17 @@ elif active_view == "Market View":
             "the actual trading history of any listed security. Peer returns are also illustrative."
         )
 
-else:  # Data & Export
-    st.caption("Group by a dimension for a quick pivot, or scroll the full filtered dataset below. Select rows to filter the rest of the page.")
-    pivot_dim = st.selectbox("Group by", options=["segment", "region", "half"], format_func=str.title)
+# ------------------------------------------------------- detail + export --
+with st.expander("Data & export", expanded=False):
+    pivot_dim = st.selectbox("Group by", ["segment", "department", "region", "half"], format_func=str.title)
     pivot = (
         filtered_df.groupby(pivot_dim, as_index=False)
-        .agg(
-            operating_income=("operating_income", "sum"),
-            cash_npat=("cash_npat", "sum"),
-            deposits=("deposits", "sum"),
-            gross_loans=("gross_loans", "sum"),
-        )
+        .agg(operating_income=("operating_income", "sum"), cash_npat=("cash_npat", "sum"),
+             deposits=("deposits", "sum"), gross_loans=("gross_loans", "sum"))
         .sort_values("cash_npat", ascending=False)
     )
     st.dataframe(
-        pivot,
-        hide_index=True,
-        use_container_width=True,
+        pivot, hide_index=True, use_container_width=True,
         column_config={
             pivot_dim: pivot_dim.title(),
             "operating_income": st.column_config.NumberColumn("Operating Income", format="A$%.0f"),
@@ -408,52 +331,28 @@ else:  # Data & Export
             "gross_loans": st.column_config.NumberColumn("Gross Loans", format="A$%.0f"),
         },
     )
-
-    st.write("")
-    display_cols = [
-        "date", "fy", "half", "segment", "region", "scenario",
-        "operating_income", "operating_expenses", "loan_impairment_expense",
-        "net_interest_income", "cash_npat", "statutory_npat",
-        "gross_loans", "deposits", "net_new_customers",
-    ]
-    detail_df = filtered_df[display_cols].sort_values("date")
-    event = st.dataframe(
-        detail_df,
-        hide_index=True,
-        use_container_width=True,
-        height=380,
-        on_select="rerun",
-        selection_mode="multi-row",
-        key="data_table_full",
-        column_config={
-            "date": st.column_config.DateColumn("Month", format="MMM YYYY"),
-            "operating_income": st.column_config.NumberColumn("Operating Income", format="A$%.0f"),
-            "operating_expenses": st.column_config.NumberColumn("Operating Expenses", format="A$%.0f"),
-            "loan_impairment_expense": st.column_config.NumberColumn("Loan Impairment Exp.", format="A$%.0f"),
-            "net_interest_income": st.column_config.NumberColumn("Net Interest Income", format="A$%.0f"),
-            "cash_npat": st.column_config.NumberColumn("Cash NPAT", format="A$%.0f"),
-            "statutory_npat": st.column_config.NumberColumn("Statutory NPAT", format="A$%.0f"),
-            "gross_loans": st.column_config.NumberColumn("Gross Loans", format="A$%.0f"),
-            "deposits": st.column_config.NumberColumn("Deposits", format="A$%.0f"),
-            "net_new_customers": st.column_config.NumberColumn("Net New Customers", format="%d"),
-        },
-    )
-    if state.handle_table_selection(event, detail_df, "segment", state.SEGMENTS_KEY):
-        st.rerun()
-
-    st.write("")
     excel_bytes = build_excel_bytes(filtered_df)
-    st.download_button(
-        "⬇ Download filtered view as Excel",
-        data=excel_bytes,
-        file_name="pulse_filtered_export.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    if excel_bytes is not None:
+        st.download_button(
+            "⬇ Download filtered view as Excel",
+            data=excel_bytes,
+            file_name="pulse_filtered_export.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    else:
+        st.download_button(
+            "⬇ Download filtered view as CSV",
+            data=build_csv_bytes(filtered_df),
+            file_name="pulse_filtered_export.csv",
+            mime="text/csv",
+        )
+        st.caption("Install `XlsxWriter` for the formatted Excel workbook — falling back to CSV.")
 
-st.divider()
 st.markdown(
-    '<div class="pulse-disclaimer">Pulse is a demo dashboard built to exercise Streamlit 1.63 interactivity '
-    "(chart/table selection events, segmented control, bordered containers). All financial figures are "
-    "synthetically generated and do not represent any real company's actual results.</div>",
+    '<div class="pulse-sub">Synthetic data generated for a Streamlit 1.63 feature demo '
+    "(native Altair selection events, st.query_params URL state, column_config). Not the reported "
+    "results of any institution.</div>",
     unsafe_allow_html=True,
 )
+
+state.sync_url()
