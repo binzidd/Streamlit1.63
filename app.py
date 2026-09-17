@@ -54,7 +54,18 @@ st.markdown(
     .pulse-card-hint { font-size: 0.68rem; color: #898781; line-height: 1.35;
                        margin-bottom: 0.2rem; }
     .pulse-card-hint.is-filtered { color: #2a78d6; font-weight: 600; }
+    /* Every bordered container (KPI tiles, chart cards) gets breathing room
+       below it -- Streamlit lays consecutive containers flush against each
+       other otherwise, which is what made the chart grid read as one solid
+       block instead of a set of distinct cards. */
     div[data-testid="stVerticalBlockBorderWrapper"] { margin-bottom: 1.1rem; }
+    /* The small-multiples facet chart has a fixed per-panel width (it can't
+       reflow like a single-view chart can). Streamlit measured it against
+       the card's content width and rendered it wider than that -- the
+       constraining box turned out to be stFullScreenFrame (Streamlit's
+       expand-to-fullscreen wrapper), not the chart element itself, so the
+       last panel was bleeding past the card and getting cropped by
+       something further up the tree. Scroll rather than crop. */
     div[data-testid="stFullScreenFrame"] { overflow-x: auto; }
     </style>
     """,
@@ -64,6 +75,16 @@ st.markdown(
 
 @contextmanager
 def card(title: str, hint: str = "", owns: str | None = None):
+    """Bordered chart card with a heading that updates live with the active
+    cross-filters (Tableau's dynamic-title convention: a click doesn't just
+    change what a chart shows, it changes what the chart is now titled).
+
+    `owns` is the filter dimension this specific chart's own marks already
+    ARE ("segments"/"regions"/"department") -- left out of its own dynamic
+    subtitle, since a chart showing segment bars doesn't need to also tell
+    you it's filtered to a segment. Charts that don't own a dimension
+    (the waterfall) pass owns=None and show the full active-filter context.
+    """
     with st.container(border=True):
         st.markdown(f'<div class="pulse-card-title">{title}</div>', unsafe_allow_html=True)
         ctx = state.filter_summary(exclude=owns)
