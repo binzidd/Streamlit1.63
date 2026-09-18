@@ -44,6 +44,14 @@ SEGMENTS = [
     "New Zealand (ASB)",
 ]
 
+# Mapping from segment name to short key used in nii_*/other_*/opex_*/lie_* columns.
+_SEGMENT_SHORT_KEYS: dict[str, str] = {
+    "Retail Banking Services":         "retail",
+    "Business Banking":                "business",
+    "Institutional Banking & Markets": "ibm",
+    "New Zealand (ASB)":               "nz",
+}
+
 
 # ---------------------------------------------------------------- data prep --
 @st.cache_data(show_spinner=False)
@@ -91,10 +99,58 @@ def _build_monthly_records(seed: int = 42) -> list[dict]:
         .reset_index(drop=True)
     )
 
+    # ------ per-segment revenue / costs / LIE --------------------------------
+    # Second groupby at (date, segment) grain to pick up the three extra cols.
+    monthly_seg_detail: pd.DataFrame = (
+        actual_df
+        .groupby(["date", "segment"], observed=True)[
+            ["net_interest_income", "other_operating_income",
+             "operating_expenses", "loan_impairment_expense"]
+        ]
+        .sum()
+        .reset_index()
+    )
+    # Emit three separate columns so JS can build the two-layer NII / other-income
+    # stacked anatomy and the opex band independently.
+    # nii   -> net interest income (bottom layer)
+    # other -> other operating income (stacked on top of NII)
+    # opex  -> operating expenses (cost band; JS reads opex_<key>)
+    # lie   -> loan impairment expense (retained for future chart use)
+    monthly_seg_detail["nii"]   = monthly_seg_detail["net_interest_income"]
+    monthly_seg_detail["other"] = monthly_seg_detail["other_operating_income"]
+    monthly_seg_detail["opex"]  = monthly_seg_detail["operating_expenses"]
+    monthly_seg_detail["lie"]   = monthly_seg_detail["loan_impairment_expense"]
+
+    # Pivot nii, other, opex, lie to wide format keyed by shortKey.
+    for metric in ("nii", "other", "opex", "lie"):
+        metric_pivot = (
+            monthly_seg_detail
+            .pivot(index="date", columns="segment", values=metric)
+            .reset_index()
+        )
+        metric_pivot.columns.name = None
+        # Rename segment columns to shortKey-prefixed names.
+        rename_map = {
+            seg: f"{metric}_{short}"
+            for seg, short in _SEGMENT_SHORT_KEYS.items()
+            if seg in metric_pivot.columns
+        }
+        metric_pivot = metric_pivot.rename(columns=rename_map)
+        # Drop any columns that were not in the shortKey map (safety).
+        keep_cols = ["date"] + list(rename_map.values())
+        metric_pivot = metric_pivot[[c for c in keep_cols if c in metric_pivot.columns]]
+        monthly_wide = monthly_wide.merge(metric_pivot, on="date", how="left")
+    # -------------------------------------------------------------------------
+
     # Serialise: ISO date strings, native Python floats.
     export = monthly_wide.copy()
     export["date"] = export["date"].dt.strftime("%Y-%m-%d")
-    for col in ["operating_income", "cash_npat"] + SEGMENTS:
+    detail_cols = [
+        f"{metric}_{short}"
+        for metric in ("nii", "other", "opex", "lie")
+        for short in _SEGMENT_SHORT_KEYS.values()
+    ]
+    for col in ["operating_income", "cash_npat"] + SEGMENTS + detail_cols:
         if col in export.columns:
             export[col] = export[col].fillna(0.0).astype(float)
 
