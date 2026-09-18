@@ -26,6 +26,7 @@ _HTML = '<div id="st_scroll_root" style="width:100%;"></div>'
 # JS module (D3 v7, raw string so Python f-string substitution is not applied)
 # ---------------------------------------------------------------------------
 _JS = r"""
+/* v5 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -381,9 +382,19 @@ export default function(component) {
             .domain([0, maxIncome * 1.1])
             .range([svgHeight - margin.bottom, margin.top]);
 
+        // Separate scale for individual segment lines so they fill the chart
+        // height instead of being squeezed into the bottom third.
+        var maxSegVal = d3.max(segments, function(seg) {
+            return d3.max(parsedMonthly, function(d) { return +d[seg] || 0; });
+        }) || maxIncome * 0.5;
+        var yScaleSegs = d3.scaleLinear()
+            .domain([0, maxSegVal * 1.18])
+            .range([svgHeight - margin.bottom, margin.top]);
+
         var maxStock = d3.max(parsedStock, function(d) { return d.value; }) || 1;
+        var minStock = d3.min(parsedStock, function(d) { return d.value; }) || 0;
         var yScaleStock = d3.scaleLinear()
-            .domain([0, maxStock * 1.1])
+            .domain([minStock * 0.92, maxStock * 1.05])
             .range([svgHeight - margin.bottom, margin.top]);
 
         // Track last active yScale for resize redraws (Fix 7).
@@ -465,20 +476,26 @@ export default function(component) {
 
         var totalLineAnimated = false;
 
-        // Segment lines
+        // Helper: build a line generator for a segment using any Y scale
+        function makeSegGen(seg, yScale) {
+            return d3.line()
+                .x(function(d) { return xScale(d._date); })
+                .y(function(d) { return yScale(+d[seg] || 0); })
+                .defined(function(d) { return d[seg] != null && !isNaN(d[seg]); })
+                .curve(d3.curveMonotoneX);
+        }
+
+        // Segment lines — initially drawn on yScaleSegs so the draw-in
+        // animation runs on the right scale from the start.
         var segLinePaths = {};
         var segAnimated  = {};
         segments.forEach(function(seg) {
-            var lineGen = d3.line()
-                .x(function(d) { return xScale(d._date); })
-                .y(function(d) { return yScaleIncome(+d[seg] || 0); })
-                .defined(function(d) { return d[seg] != null && !isNaN(d[seg]); });
-
+            var lineGen = makeSegGen(seg, yScaleSegs);
             var p = g.append('path')
                 .datum(parsedMonthly)
                 .attr('fill', 'none')
                 .attr('stroke', SEG_COLORS[seg] || '#888')
-                .attr('stroke-width', 2.5)
+                .attr('stroke-width', 3)
                 .attr('d', lineGen)
                 .attr('opacity', 0);
 
@@ -490,16 +507,21 @@ export default function(component) {
             segAnimated[seg]  = false;
         });
 
-        // Segment end-of-line labels
+        // Segment end-of-line labels — bold, large, with a white bg pill
         var segLabelEls = {};
+        var segLabelBgs = {};
         segments.forEach(function(seg) {
+            var bg = g.append('rect')
+                .attr('rx', 3).attr('fill', 'white').attr('fill-opacity', 0.85)
+                .attr('opacity', 0);
             var lbl = g.append('text')
-                .attr('font-size', '0.65rem')
-                .attr('font-weight', '700')
+                .attr('font-size', '12px')
+                .attr('font-weight', '800')
                 .attr('fill', SEG_COLORS[seg] || '#888')
                 .attr('opacity', 0)
                 .text(SEG_SHORT[seg] || seg);
             segLabelEls[seg] = lbl;
+            segLabelBgs[seg] = bg;
         });
 
         // Credit shock rectangle (Apr–Sep 2023)
@@ -538,7 +560,7 @@ export default function(component) {
         // Cash NPAT dashed line
         var npatLineGen = d3.line()
             .x(function(d) { return xScale(d._date); })
-            .y(function(d) { return yScaleIncome(+d.cash_npat || 0); });
+            .y(function(d) { return yScaleSegs(+d.cash_npat || 0); });
 
         var npatPath = g.append('path')
             .datum(parsedMonthly)
@@ -556,12 +578,12 @@ export default function(component) {
         // NPAT end label
         var lastNpatRow = parsedMonthly[parsedMonthly.length - 1];
         var npatLabel = g.append('text')
-            .attr('font-size', '0.65rem').attr('font-weight', '700').attr('fill', '#1baf7a')
+            .attr('font-size', '12px').attr('font-weight', '800').attr('fill', '#1baf7a')
             .attr('opacity', 0);
         if (lastNpatRow) {
             npatLabel
-                .attr('x', xScale(lastNpatRow._date) + 4)
-                .attr('y', yScaleIncome(+lastNpatRow.cash_npat || 0))
+                .attr('x', xScale(lastNpatRow._date) + 6)
+                .attr('y', yScaleSegs(+lastNpatRow.cash_npat || 0))
                 .attr('dy', '0.35em')
                 .text('Cash NPAT');
         }
@@ -603,7 +625,7 @@ export default function(component) {
             _lastYScale = yScale; // Fix 7: track for ResizeObserver redraws.
             var fmt = isStock
                 ? function(d) { return 'A$' + d.toFixed(0); }
-                : function(d) { return 'A$' + d3.format('.2s')(d); };
+                : function(d) { return 'A$' + d3.format('.2s')(d).replace('G','B'); };
             // Fix 1: chain .on('end') onto the SAME transition to avoid D3 v7
             // pre-emption — a second .transition() call on the same selection
             // cancels the first before it can call the axis.
@@ -616,26 +638,34 @@ export default function(component) {
                 });
         }
 
-        function updateSegmentLabels(opacity) {
+        function updateSegmentLabels(opacity, yScale) {
+            var yS = yScale || yScaleSegs;
             var lastRow = parsedMonthly[parsedMonthly.length - 1];
             if (!lastRow) return;
-            // Fix 15: de-collide overlapping end-of-line labels.
-            // Compute raw y positions, sort, apply minimum 14px gap, then render.
+            // De-collide overlapping labels: sort by y, enforce 18px gap.
             var labelData = segments.map(function(seg) {
-                return { seg: seg, y: yScaleIncome(+lastRow[seg] || 0) };
+                return { seg: seg, y: yS(+lastRow[seg] || 0) };
             });
             labelData.sort(function(a, b) { return a.y - b.y; });
             for (var i = 1; i < labelData.length; i++) {
-                if (labelData[i].y - labelData[i - 1].y < 14) {
-                    labelData[i].y = labelData[i - 1].y + 14;
+                if (labelData[i].y - labelData[i - 1].y < 18) {
+                    labelData[i].y = labelData[i - 1].y + 18;
                 }
             }
+            var lx = xScale(lastRow._date) + 6;
             labelData.forEach(function(ld) {
-                segLabelEls[ld.seg]
-                    .attr('x', xScale(lastRow._date) + 4)
-                    .attr('y', ld.y)
-                    .attr('dy', '0.35em')
-                    .attr('opacity', opacity);
+                var el = segLabelEls[ld.seg];
+                var bg = segLabelBgs[ld.seg];
+                el.attr('x', lx).attr('y', ld.y).attr('dy', '0.35em').attr('opacity', opacity);
+                // Size bg rect to text bounds
+                try {
+                    var bb = el.node().getBBox();
+                    bg.attr('x', bb.x - 2).attr('y', bb.y - 1)
+                      .attr('width', bb.width + 4).attr('height', bb.height + 2)
+                      .attr('opacity', opacity * 0.9);
+                } catch(e) {
+                    bg.attr('opacity', 0);
+                }
             });
         }
 
@@ -735,7 +765,7 @@ export default function(component) {
                         segLinePaths[seg].path.transition(t).attr('opacity', 1).attr('stroke-dashoffset', 0);
                     }
                 });
-                updateSegmentLabels(1);
+                updateSegmentLabels(1, yScaleSegs);
                 shockRect.transition(t).attr('opacity', 0);
                 shockAnnotG.transition(t).attr('opacity', 0);
                 npatPath.transition(t).attr('opacity', 0).attr('stroke-dashoffset', npatLen);
@@ -745,8 +775,8 @@ export default function(component) {
                 stockLinePath.transition(t).attr('opacity', 0).attr('stroke-dashoffset', stockLineLen);
                 stockAnimated = false;
                 kpiOverlay.style.opacity = '0';
-                styleYAxis(yScaleIncome, false);
-                drawGridlines(yScaleIncome);
+                styleYAxis(yScaleSegs, false);
+                drawGridlines(yScaleSegs);
 
             // ---- Step 3: credit shock highlight ----
             } else if (idx === 3) {
@@ -760,14 +790,16 @@ export default function(component) {
                     var isBB = seg === 'Business Banking';
                     segLinePaths[seg].path.transition(t)
                         .attr('opacity', isBB ? 1 : 0.15)
+                        .attr('stroke-width', isBB ? 3.5 : 2)
                         .attr('stroke-dashoffset', 0);
-                    segLabelEls[seg].transition(t).attr('opacity', isBB ? 1 : 0.15);
+                    segLabelEls[seg].transition(t).attr('opacity', isBB ? 1 : 0.1);
+                    segLabelBgs[seg].transition(t).attr('opacity', isBB ? 0.9 : 0);
                     if (isBB) {
                         var lastRow = parsedMonthly[parsedMonthly.length - 1];
                         if (lastRow) {
                             segLabelEls[seg]
-                                .attr('x', xScale(lastRow._date) + 4)
-                                .attr('y', yScaleIncome(+lastRow[seg] || 0))
+                                .attr('x', xScale(lastRow._date) + 6)
+                                .attr('y', yScaleSegs(+lastRow[seg] || 0))
                                 .attr('dy', '0.35em');
                         }
                     }
@@ -781,7 +813,8 @@ export default function(component) {
                 stockLinePath.transition(t).attr('opacity', 0).attr('stroke-dashoffset', stockLineLen);
                 stockAnimated = false;
                 kpiOverlay.style.opacity = '0';
-                drawGridlines(yScaleIncome);
+                styleYAxis(yScaleSegs, false);
+                drawGridlines(yScaleSegs);
 
             // ---- Step 4: un-dim all, add Cash NPAT ----
             } else if (idx === 4) {
@@ -791,9 +824,10 @@ export default function(component) {
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
                 segments.forEach(function(seg) {
-                    segLinePaths[seg].path.transition(t).attr('opacity', 1).attr('stroke-dashoffset', 0);
+                    segLinePaths[seg].path.transition(t)
+                        .attr('opacity', 1).attr('stroke-width', 3).attr('stroke-dashoffset', 0);
                 });
-                updateSegmentLabels(1);
+                updateSegmentLabels(1, yScaleSegs);
                 shockRect.transition(t).attr('opacity', 0.5);
                 shockAnnotG.transition(t).attr('opacity', 0.5);
 
@@ -820,7 +854,8 @@ export default function(component) {
                 stockLinePath.transition(t).attr('opacity', 0).attr('stroke-dashoffset', stockLineLen);
                 stockAnimated = false;
                 kpiOverlay.style.opacity = '0';
-                drawGridlines(yScaleIncome);
+                styleYAxis(yScaleSegs, false);
+                drawGridlines(yScaleSegs);
 
             // ---- Step 5: crossfade to share price ----
             } else if (idx === 5) {
