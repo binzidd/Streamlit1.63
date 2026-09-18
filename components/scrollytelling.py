@@ -11,7 +11,7 @@ _HTML = '<div id="st_scroll_root" style="width:100%;"></div>'
 # JS module (D3 v7)
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* v7 */
+/* v8 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -51,12 +51,13 @@ export default function(component) {
             if (window.d3) { resolve(); return; }
             var existing = document.querySelector('script[data-d3]');
             if (existing) {
-                // D3 may have already finished loading between the window.d3 check
-                // and finding the existing tag — check again before attaching a
-                // listener that would never fire.
                 if (window.d3) { resolve(); return; }
                 existing.addEventListener('load', resolve);
                 existing.addEventListener('error', reject);
+                // Guard: script already completed but window.d3 still missing
+                if (existing.readyState === 'loaded' || existing.readyState === 'complete') {
+                    reject(new Error('d3 load failed'));
+                }
                 return;
             }
             var s = document.createElement('script');
@@ -68,14 +69,49 @@ export default function(component) {
         });
     }
 
+    // ---------------------------------------------------------------- d3-sankey load
+    // d3-sankey@0.12.3 exports into window.d3 (adds .sankey, .sankeyLinkHorizontal etc.)
+    // so after load we alias window.d3sankey = window.d3 so callers can use dsk.sankey().
+    function loadD3Sankey() {
+        return new Promise(function(resolve, reject) {
+            // Already loaded: window.d3.sankey is available
+            if (window.d3 && window.d3.sankey) {
+                window.d3sankey = window.d3;
+                resolve();
+                return;
+            }
+            var existing = document.querySelector('script[data-d3sankey]');
+            if (existing) {
+                if (window.d3 && window.d3.sankey) {
+                    window.d3sankey = window.d3;
+                    resolve();
+                    return;
+                }
+                existing.addEventListener('load', function() {
+                    window.d3sankey = window.d3;
+                    resolve();
+                });
+                existing.addEventListener('error', reject);
+                return;
+            }
+            var s = document.createElement('script');
+            s.setAttribute('data-d3sankey', '1');
+            s.src = 'https://unpkg.com/d3-sankey@0.12.3/dist/d3-sankey.min.js';
+            s.onload = function() {
+                // d3-sankey adds .sankey/.sankeyLinkHorizontal to window.d3
+                window.d3sankey = window.d3;
+                resolve();
+            };
+            s.onerror = reject;
+            document.head.appendChild(s);
+        });
+    }
+
     loadD3().then(buildStory).catch(function() {
         root.innerHTML = '<p style="color:red;padding:12px;">D3 failed to load.</p>';
     });
 
     // Return a real teardown to the V2 component runtime.
-    // buildStory runs asynchronously (after loadD3 resolves), so we expose a
-    // stable function that delegates to whatever cleanup buildStory registered
-    // on parentElement.
     return function() {
         if (parentElement._storyObserver) {
             parentElement._storyObserver.disconnect();
@@ -178,14 +214,10 @@ export default function(component) {
         ];
 
         // ------------------------------------------------ closure state
-        // Restore selectedSeg across re-renders so user's badge selection survives.
         var selectedSeg = parentElement._selectedSeg || 'Retail Banking Services';
         var currentStep = -1;
 
         // ------------------------------------------------ scroll container
-        // scrollContainer is a non-scrolling wrapper — overflow must NOT be set here
-        // because position:sticky on chartCol only works when the nearest scrolling
-        // ancestor is the direct parent of the sticky element.
         var scrollContainer = root;
         scrollContainer.style.cssText = [
             'position:relative',
@@ -193,7 +225,6 @@ export default function(component) {
             'background:#f8fafc',
         ].join(';');
 
-        // inner IS the scroll container — chartCol (sticky) is a direct flex child of inner
         var inner = document.createElement('div');
         inner.style.cssText = [
             'display:flex',
@@ -206,9 +237,6 @@ export default function(component) {
 
         // ---- LEFT sticky chart column (62%)
         var chartCol = document.createElement('div');
-        // position:sticky makes chartCol the containing block for absolutely-positioned
-        // children (such as kpiOverlay), so we do NOT add a separate position:relative.
-        // Only one position declaration — remove the duplicate from the original array.
         chartCol.style.cssText = [
             'width:62%',
             'position:sticky',
@@ -271,7 +299,7 @@ export default function(component) {
         ].join(';');
         chartCol.appendChild(kpiOverlay);
 
-        // KPI card specs — value filled by D3 count-up tween at step 7
+        // KPI card specs
         var KPI_SPECS = [
             { label:'Share Price',      prefix:'A$', suffix:'',  decimals:2, key:'share_price' },
             { label:'P/E Ratio',        prefix:'',   suffix:'x', decimals:1, key:'pe_ratio' },
@@ -317,7 +345,7 @@ export default function(component) {
         ].join(';');
         inner.appendChild(stepsCol);
 
-        // inject badge button styles — store on parentElement so cleanup can remove it
+        // inject badge button styles
         var styleEl = document.createElement('style');
         styleEl.textContent = [
             '.seg-badge { cursor:pointer; border-radius:20px; padding:9px 18px; font-weight:600; font-size:0.82rem; color:#0f172a; margin:4px; min-height:44px; transition:background 0.2s, color 0.2s; }',
@@ -416,6 +444,9 @@ export default function(component) {
 
         function getW() { return svgEl.getBoundingClientRect().width || 640; }
 
+        function innerW() { return getW() - margin.left - margin.right; }
+        function innerH() { return svgHeight - margin.top - margin.bottom; }
+
         // Unified X domain
         var allDates = parsedMonthly.map(function(d) { return d._date; })
             .concat(parsedStock.map(function(d) { return d._date; }));
@@ -443,20 +474,6 @@ export default function(component) {
             .range([svgHeight - margin.bottom, margin.top]);
 
         var _lastYScale = yScaleIncome;
-
-        // Build per-segment drill-down y scales (computed lazily, cached)
-        var yScaleDrillCache = {};
-        function getYScaleDrill(seg) {
-            if (yScaleDrillCache[seg]) return yScaleDrillCache[seg];
-            var key = SEG_KEY[seg] || 'retail';
-            var maxRev = d3.max(parsedMonthly, function(d) {
-                return (+d['nii_' + key] || 0) + (+d['other_' + key] || 0);
-            }) || 1;
-            yScaleDrillCache[seg] = d3.scaleLinear()
-                .domain([0, maxRev * 1.15])
-                .range([svgHeight - margin.bottom, margin.top]);
-            return yScaleDrillCache[seg];
-        }
 
         var g = svg.append('g');
 
@@ -511,11 +528,9 @@ export default function(component) {
                 });
         }
 
-        // ==================================================================
-        // Chart elements — all created upfront, toggled via opacity
-        // ==================================================================
-
-        // ---- Step 1: total income area + line
+        // =====================================================================
+        // STEP 1: total income area + line (navy) — KEEP
+        // =====================================================================
         var totalAreaGen = d3.area()
             .x(function(d) { return xScale(d._date); })
             .y0(yScaleIncome(0))
@@ -557,9 +572,140 @@ export default function(component) {
         }
         var totalLineAnimated = false;
 
-        // ---- Step 2: stacked area bands
+        // =====================================================================
+        // STEP 2: ANIMATED TREEMAP — segment proportional split
+        // =====================================================================
+
+        // Compute annual totals per segment across full period
+        var totalBySeg = {};
+        segments.forEach(function(seg) { totalBySeg[seg] = 0; });
+        parsedMonthly.forEach(function(d) {
+            segments.forEach(function(seg) {
+                totalBySeg[seg] += (+d[seg] || 0);
+            });
+        });
+        var totalAll = segments.reduce(function(s, seg) { return s + totalBySeg[seg]; }, 0) || 1;
+
+        // Container group for all treemap elements — positioned at chart area origin
+        var treemapG = g.append('g')
+            .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')')
+            .attr('opacity', 0);
+
+        var treemapRects  = null;
+        var treemapLabels = null;
+        var treemapBuilt  = false;
+
+        function buildTreemap() {
+            var iW = innerW();
+            var iH = innerH();
+
+            // Clear previous content
+            treemapG.selectAll('*').remove();
+
+            var rootData = {
+                name: 'Group',
+                children: segments.map(function(seg) {
+                    return { name: seg, value: totalBySeg[seg] };
+                })
+            };
+
+            var hierarchy = d3.hierarchy(rootData)
+                .sum(function(d) { return d.value || 0; })
+                .sort(function(a, b) { return b.value - a.value; });
+
+            var treemapLayout = d3.treemap()
+                .size([iW, iH])
+                .padding(3)
+                .round(true);
+
+            treemapLayout(hierarchy);
+
+            var leaves = hierarchy.leaves();
+
+            // Rects — start collapsed to full canvas, animate to treemap positions
+            treemapRects = treemapG.selectAll('rect.tm-rect')
+                .data(leaves)
+                .enter()
+                .append('rect')
+                .attr('class', 'tm-rect')
+                .attr('x', 0)
+                .attr('y', 0)
+                .attr('width', iW)
+                .attr('height', iH)
+                .attr('fill', function(d) { return SEG_COLORS[d.data.name] || '#888'; })
+                .attr('stroke', 'white')
+                .attr('stroke-width', 2)
+                .attr('rx', 4)
+                .attr('opacity', 0);
+
+            // Animate rects in: fade in then transition to treemap position
+            treemapRects
+                .transition().duration(200).ease(d3.easeQuadIn)
+                .attr('opacity', 1)
+                .transition().duration(600).ease(d3.easeCubicInOut)
+                .attr('x', function(d) { return d.x0; })
+                .attr('y', function(d) { return d.y0; })
+                .attr('width', function(d) { return Math.max(0, d.x1 - d.x0); })
+                .attr('height', function(d) { return Math.max(0, d.y1 - d.y0); });
+
+            // Labels: short name + share %, centered in rect, hidden for small rects
+            treemapLabels = treemapG.selectAll('g.tm-label')
+                .data(leaves)
+                .enter()
+                .append('g')
+                .attr('class', 'tm-label')
+                .attr('opacity', 0)
+                .attr('pointer-events', 'none');
+
+            treemapLabels.each(function(d) {
+                var w = d.x1 - d.x0;
+                var h = d.y1 - d.y0;
+                if (w < 80) return; // hide label for small rects
+                var cx = d.x0 + w / 2;
+                var cy = d.y0 + h / 2;
+                var pct = (d.data.value / totalAll * 100).toFixed(1) + '%';
+                var shortName = SEG_SHORT[d.data.name] || d.data.name;
+
+                d3.select(this).append('text')
+                    .attr('x', cx)
+                    .attr('y', cy - 8)
+                    .attr('text-anchor', 'middle')
+                    .attr('dominant-baseline', 'middle')
+                    .attr('font-size', Math.min(14, w / 6) + 'px')
+                    .attr('font-weight', '700')
+                    .attr('fill', 'white')
+                    .text(shortName);
+
+                d3.select(this).append('text')
+                    .attr('x', cx)
+                    .attr('y', cy + 12)
+                    .attr('text-anchor', 'middle')
+                    .attr('dominant-baseline', 'middle')
+                    .attr('font-size', Math.min(12, w / 7) + 'px')
+                    .attr('font-weight', '400')
+                    .attr('fill', 'rgba(255,255,255,0.85)')
+                    .text(pct);
+            });
+
+            // Fade labels in after rects fully settle (200ms fade-in + 600ms position = 800ms total, +50ms buffer)
+            treemapLabels
+                .transition().delay(850).duration(400)
+                .attr('opacity', 1);
+
+            treemapBuilt = true;
+        }
+
+        function hideTreemap() {
+            treemapG.transition().duration(400).attr('opacity', 0);
+        }
+
+        // =====================================================================
+        // STEP 3: STREAM GRAPH — five-year revenue flow
+        // =====================================================================
+
+        // Build stack with silhouette offset
         var STACK_KEYS = segments.map(function(s) { return SEG_KEY[s]; });
-        // Build stack data: array of {date, _date, retail, business, ibm, nz}
+
         var stackInput = parsedMonthly.map(function(d) {
             var row = { _date: d._date, date: d.date };
             segments.forEach(function(seg) {
@@ -568,42 +714,53 @@ export default function(component) {
             return row;
         });
 
-        var stack = d3.stack()
+        var streamStack = d3.stack()
             .keys(STACK_KEYS)
             .order(d3.stackOrderNone)
-            .offset(d3.stackOffsetNone);
+            .offset(d3.stackOffsetSilhouette);
 
-        var stackedSeries = stack(stackInput);
+        var streamSeries = streamStack(stackInput);
 
-        // One area generator per segment band
-        var stackedAreaGens = {};
-        var stackedPaths    = {};
-        var stackedLabels   = {};
-        var stackedLabelBgs = {};
+        // Compute Y extent from all stacked values
+        var streamYExtent = [Infinity, -Infinity];
+        streamSeries.forEach(function(series) {
+            series.forEach(function(d) {
+                if (d[0] < streamYExtent[0]) streamYExtent[0] = d[0];
+                if (d[1] > streamYExtent[1]) streamYExtent[1] = d[1];
+            });
+        });
+        if (!isFinite(streamYExtent[0])) streamYExtent = [-maxIncome * 0.5, maxIncome * 0.5];
+
+        var yScaleStream = d3.scaleLinear()
+            .domain(streamYExtent)
+            .range([svgHeight - margin.bottom, margin.top]);
+
+        var streamAreaGen = d3.area()
+            .x(function(d) { return xScale(d.data._date); })
+            .y0(function(d) { return yScaleStream(d[0]); })
+            .y1(function(d) { return yScaleStream(d[1]); })
+            .curve(d3.curveMonotoneX);
+
+        var streamPaths   = {};
+        var streamLabelBgs = {};
+        var streamLabelEls = {};
 
         segments.forEach(function(seg, si) {
-            var series = stackedSeries[si];
+            var series = streamSeries[si];
             var col    = SEG_COLORS[seg] || '#888';
-
-            var areaGen = d3.area()
-                .x(function(d) { return xScale(d.data._date); })
-                .y0(function(d) { return yScaleIncome(d[0]); })
-                .y1(function(d) { return yScaleIncome(d[1]); })
-                .curve(d3.curveMonotoneX);
-
-            stackedAreaGens[seg] = areaGen;
+            var key    = SEG_KEY[seg];
 
             var p = g.append('path')
                 .datum(series)
                 .attr('fill', col)
-                .attr('fill-opacity', 0.75)
-                .attr('stroke', 'white')
-                .attr('stroke-width', 0.5)
-                .attr('d', areaGen)
+                .attr('fill-opacity', 0.85)
+                .attr('stroke', 'none')
+                .attr('d', streamAreaGen)
                 .attr('opacity', 0);
-            stackedPaths[seg] = p;
 
-            // band label (right edge centroid)
+            streamPaths[seg] = p;
+
+            // Label at rightmost data point
             var bg = g.append('rect').attr('rx', 3).attr('fill', 'white').attr('fill-opacity', 0.8).attr('opacity', 0);
             var lbl = g.append('text')
                 .attr('font-size', '11px')
@@ -611,20 +768,20 @@ export default function(component) {
                 .attr('fill', col)
                 .attr('opacity', 0)
                 .text(SEG_SHORT[seg] || seg);
-            stackedLabels[seg]   = lbl;
-            stackedLabelBgs[seg] = bg;
+            streamLabelEls[seg]  = lbl;
+            streamLabelBgs[seg]  = bg;
         });
 
-        function updateStackedLabels(opacity) {
+        function updateStreamLabels(opacity) {
             var lastIdx = stackInput.length - 1;
             if (lastIdx < 0) return;
             var lx = xScale(stackInput[lastIdx]._date) + 5;
             segments.forEach(function(seg, si) {
-                var series = stackedSeries[si];
+                var series = streamSeries[si];
                 var band   = series[lastIdx];
-                var cy     = (yScaleIncome(band[0]) + yScaleIncome(band[1])) / 2;
-                var lbl    = stackedLabels[seg];
-                var bg     = stackedLabelBgs[seg];
+                var cy     = (yScaleStream(band[0]) + yScaleStream(band[1])) / 2;
+                var lbl    = streamLabelEls[seg];
+                var bg     = streamLabelBgs[seg];
                 lbl.attr('x', lx).attr('y', cy).attr('dy', '0.35em').attr('opacity', opacity);
                 try {
                     var bb = lbl.node().getBBox();
@@ -635,7 +792,20 @@ export default function(component) {
             });
         }
 
-        // ---- Step 3: individual segment lines
+        function hideStreamGraph() {
+            segments.forEach(function(seg) {
+                streamPaths[seg].transition().duration(400).attr('opacity', 0);
+                streamLabelEls[seg].transition().duration(400).attr('opacity', 0);
+                streamLabelBgs[seg].transition().duration(400).attr('opacity', 0);
+            });
+        }
+
+        // =====================================================================
+        // STEP 4: badge highlight (no new chart elements — uses segment lines)
+        // =====================================================================
+
+        // We still need the per-segment lines for step 3/4 highlight.
+        // Build them using the un-stacked per-segment data.
         var segLinePaths = {};
         var segLineGens  = {};
         var segAnimated  = {};
@@ -715,11 +885,9 @@ export default function(component) {
             });
         }
 
-        // ---- Step 4 badge highlight function
         function selectSegment(seg) {
             selectedSeg = seg;
             parentElement._selectedSeg = seg;
-            // Update D3 segment lines
             segments.forEach(function(s) {
                 var isSel = s === seg;
                 segLinePaths[s].path
@@ -729,7 +897,6 @@ export default function(component) {
                 segLabelEls[s].transition().duration(300).attr('opacity', isSel ? 1 : 0.1);
                 segLabelBgs[s].transition().duration(300).attr('opacity', isSel ? 0.9 : 0);
             });
-            // Update badge styles
             if (step4BadgesContainer) {
                 step4BadgesContainer.querySelectorAll('.seg-badge').forEach(function(btn) {
                     var bseg = btn.dataset.seg;
@@ -748,146 +915,195 @@ export default function(component) {
                     }
                 });
             }
+            // If step 5 (Sankey) is visible, redraw it for the newly selected segment
+            if (currentStep === 5 && window.d3sankey) {
+                chartTitle.textContent = 'How ' + (SEG_SHORT[seg] || seg) + ' turns revenue into profit';
+                drawSankey();
+            }
         }
 
-        // ---- Step 5: drill-down paths (one set, reused for any selectedSeg)
-        var drillNiiArea   = g.append('path').attr('fill', '#0d9488').attr('fill-opacity', 0.70).attr('opacity', 0).attr('stroke', 'none');
-        var drillRevArea   = g.append('path').attr('fill', '#5eead4').attr('fill-opacity', 0.60).attr('opacity', 0).attr('stroke', 'none');
-        var drillOpexArea  = g.append('path').attr('fill', '#ef4444').attr('fill-opacity', 0.50).attr('opacity', 0).attr('stroke', 'none');
-        var drillOiLine    = g.append('path').attr('fill', 'none').attr('stroke', '#0f172a').attr('stroke-width', 3).attr('opacity', 0);
-        var drillCtiLabel  = g.append('text').attr('font-size', '11px').attr('font-weight', '700').attr('fill', '#0f172a').attr('opacity', 0);
-        var drillRevLabel  = g.append('text').attr('font-size', '11px').attr('fill', '#0d9488').attr('opacity', 0);
-        var drillOiLabel   = g.append('text').attr('font-size', '11px').attr('fill', '#0f172a').attr('opacity', 0);
-        var drillOpexLabel = g.append('text').attr('font-size', '11px').attr('fill', '#ef4444').attr('opacity', 0);
+        // =====================================================================
+        // STEP 5: SANKEY P&L DIAGRAM
+        // =====================================================================
 
-        var drillAnimated = false;
+        // Container group for Sankey — positioned at chart area origin
+        var sankeyG = g.append('g')
+            .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')')
+            .attr('opacity', 0);
 
-        function buildDrillDown(seg) {
+        function computeSankeyData(seg) {
             var key = SEG_KEY[seg] || 'retail';
-            var yD  = getYScaleDrill(seg);
 
-            // Area generators
-            var niiAreaGen = d3.area()
-                .x(function(d) { return xScale(d._date); })
-                .y0(yD(0))
-                .y1(function(d) { return yD(+d['nii_' + key] || 0); })
-                .curve(d3.curveMonotoneX);
+            var totalNii   = Math.max(d3.sum(parsedMonthly, function(d) { return +d['nii_'   + key] || 0; }), 1);
+            var totalOther = Math.max(d3.sum(parsedMonthly, function(d) { return +d['other_' + key] || 0; }), 1);
+            var totalOpex  = d3.sum(parsedMonthly, function(d) { return +d['opex_'  + key] || 0; });
+            var totalLie   = d3.sum(parsedMonthly, function(d) { return +d['lie_'   + key] || 0; });
+            var totalRev   = totalNii + totalOther;
+            // Flow conservation: preProvision must equal totalRev - opexLink exactly
+            var preProvision = Math.max(totalRev - totalOpex, 0);
+            var opexLink = totalRev - preProvision;
+            // Flow conservation: npat must equal preProvision - lieLink exactly
+            var npat = Math.max(preProvision - totalLie, 0);
+            var lieLink = preProvision - npat;
 
-            var revAreaGen = d3.area()
-                .x(function(d) { return xScale(d._date); })
-                .y0(function(d) { return yD(+d['nii_' + key] || 0); })
-                .y1(function(d) { return yD((+d['nii_' + key] || 0) + (+d['other_' + key] || 0)); })
-                .curve(d3.curveMonotoneX);
-
-            var opexAreaGen = d3.area()
-                .x(function(d) { return xScale(d._date); })
-                .y0(function(d) {
-                    var rev  = (+d['nii_' + key] || 0) + (+d['other_' + key] || 0);
-                    var opex = +d['opex_' + key] || 0;
-                    return yD(rev - opex);
-                })
-                .y1(function(d) { return yD((+d['nii_' + key] || 0) + (+d['other_' + key] || 0)); })
-                .curve(d3.curveMonotoneX);
-
-            var oiLineGen = d3.line()
-                .x(function(d) { return xScale(d._date); })
-                .y(function(d) {
-                    var rev  = (+d['nii_' + key] || 0) + (+d['other_' + key] || 0);
-                    var opex = +d['opex_' + key] || 0;
-                    return yD(rev - opex);
-                })
-                .curve(d3.curveMonotoneX);
-
-            drillNiiArea.datum(parsedMonthly).attr('d', niiAreaGen);
-            drillRevArea.datum(parsedMonthly).attr('d', revAreaGen);
-            drillOpexArea.datum(parsedMonthly).attr('d', opexAreaGen);
-            drillOiLine.datum(parsedMonthly).attr('d', oiLineGen);
-
-            // set dashoffset for line draw animation
-            var oiLen = 0;
-            try { oiLen = drillOiLine.node().getTotalLength(); } catch(e) {}
-            if (oiLen === 0) {
-                requestAnimationFrame(function() {
-                    try { oiLen = drillOiLine.node().getTotalLength(); } catch(e) {}
-                    drillOiLine
-                        .attr('stroke-dasharray', oiLen + ' ' + oiLen)
-                        .attr('stroke-dashoffset', oiLen);
-                });
-            } else {
-                drillOiLine
-                    .attr('stroke-dasharray', oiLen + ' ' + oiLen)
-                    .attr('stroke-dashoffset', oiLen);
-            }
-
-            // Labels — positioned at last data point
-            var last = parsedMonthly[parsedMonthly.length - 1];
-            var lx = last ? xScale(last._date) + 8 : margin.left;
-            if (last) {
-                var nii   = +last['nii_'   + key] || 0;
-                var other = +last['other_' + key] || 0;
-                var opex  = +last['opex_'  + key] || 0;
-                var rev   = nii + other;
-                var oi    = rev - opex;
-                var cti   = rev > 0 ? (opex / rev * 100).toFixed(1) : '—';
-
-                drillRevLabel
-                    .attr('x', lx).attr('y', yD(rev)).attr('dy', '-4px')
-                    .text('Revenue A$' + (rev / 1e9).toFixed(1) + 'B');
-                drillOpexLabel
-                    .attr('x', lx).attr('y', yD(rev - opex / 2)).attr('dy', '0.35em')
-                    .text('Costs (CTI: ' + cti + '%)');
-                drillOiLabel
-                    .attr('x', lx).attr('y', yD(oi)).attr('dy', '0.35em')
-                    .text('Op. Income');
-                drillCtiLabel
-                    .attr('x', lx).attr('y', yD(oi) - 18)
-                    .text('CTI: ' + cti + '%');
-            }
-
-            // Sequential animated reveals
-            drillNiiArea.attr('opacity', 0)
-                .transition().duration(500).ease(d3.easeCubicInOut)
-                .attr('opacity', 1);
-
-            drillRevArea.attr('opacity', 0)
-                .transition().delay(300).duration(500).ease(d3.easeCubicInOut)
-                .attr('opacity', 1);
-
-            drillOpexArea.attr('opacity', 0)
-                .transition().delay(600).duration(500).ease(d3.easeCubicInOut)
-                .attr('opacity', 1);
-
-            drillOiLine.attr('opacity', 0)
-                .transition().delay(900).duration(800).ease(d3.easeCubicInOut)
-                .attr('opacity', 1)
-                .attr('stroke-dashoffset', 0);
-
-            drillRevLabel.attr('opacity', 0)
-                .transition().delay(1000).duration(400)
-                .attr('opacity', 1);
-            drillOpexLabel.attr('opacity', 0)
-                .transition().delay(1100).duration(400)
-                .attr('opacity', 1);
-            drillOiLabel.attr('opacity', 0)
-                .transition().delay(1150).duration(400)
-                .attr('opacity', 1);
-            drillCtiLabel.attr('opacity', 0)
-                .transition().delay(1200).duration(400)
-                .attr('opacity', 1);
+            return {
+                totalNii:     totalNii,
+                totalOther:   totalOther,
+                opexLink:     opexLink,
+                lieLink:      lieLink,
+                totalRev:     totalRev,
+                preProvision: preProvision,
+                npat:         npat,
+            };
         }
 
-        function hideDrillDown() {
-            drillNiiArea.transition().duration(300).attr('opacity', 0);
-            drillRevArea.transition().duration(300).attr('opacity', 0);
-            drillOpexArea.transition().duration(300).attr('opacity', 0);
-            drillOiLine.transition().duration(300).attr('opacity', 0);
-            drillCtiLabel.transition().duration(300).attr('opacity', 0);
-            drillRevLabel.transition().duration(300).attr('opacity', 0);
-            drillOiLabel.transition().duration(300).attr('opacity', 0);
-            drillOpexLabel.transition().duration(300).attr('opacity', 0);
+        function formatSankeyValue(v) {
+            return 'A$' + d3.format('.3s')(v).replace('G','B');
         }
 
-        // ---- Step 6: stock area + line
+        function drawSankey() {
+            if (!window.d3sankey) return;
+            var dsk = window.d3sankey;
+            var iW = innerW();
+            var iH = innerH();
+            var seg = selectedSeg;
+            var segCol = SEG_COLORS[seg] || '#2a78d6';
+            var sd = computeSankeyData(seg);
+
+            // Clear previous content
+            sankeyG.selectAll('*').remove();
+
+            // Node definitions
+            var nodeData = [
+                { name: 'Net Interest Income' },   // 0
+                { name: 'Fee & Other Income' },    // 1
+                { name: 'Gross Revenue' },          // 2
+                { name: 'Operating Expenses' },    // 3
+                { name: 'Pre-Provision Profit' },  // 4
+                { name: 'Loan Impairment' },        // 5
+                { name: 'Cash NPAT' },              // 6
+            ];
+
+            // Link definitions (flow conservation: in-flow === out-flow at every node)
+            var linkData = [
+                { source: 0, target: 2, value: sd.totalNii },
+                { source: 1, target: 2, value: sd.totalOther },
+                { source: 2, target: 3, value: sd.opexLink },
+                { source: 2, target: 4, value: sd.preProvision },
+                { source: 4, target: 5, value: sd.lieLink },
+                { source: 4, target: 6, value: sd.npat },
+            ];
+
+            var sankeyLayout = dsk.sankey()
+                .nodeWidth(20)
+                .nodePadding(24)
+                .extent([[24, 24], [iW - 24, iH - 24]]);
+
+            var graph;
+            try {
+                graph = sankeyLayout({ nodes: nodeData.map(function(d) { return Object.assign({}, d); }),
+                                       links: linkData.map(function(d) { return Object.assign({}, d); }) });
+            } catch(e) { return; }
+
+            var nodes = graph.nodes;
+            var links = graph.links;
+
+            // Node color function
+            function nodeColor(i) {
+                if (i === 0 || i === 1) return '#0d9488'; // teal source nodes
+                if (i === 2) return segCol;               // hub = segment color
+                if (i === 3 || i === 5) return '#dc2626'; // red drains
+                return '#16a34a';                          // green profit nodes
+            }
+
+            // Link color function
+            function linkColor(link) {
+                var ti = link.target.index !== undefined ? link.target.index : link.target;
+                if (ti === 3 || ti === 5) return 'rgba(220,38,38,0.35)';
+                return d3.color(segCol) ? d3.color(segCol).copy({opacity: 0.4}).formatRgb() : segCol + '66';
+            }
+
+            // Draw links
+            var linkPath = dsk.sankeyLinkHorizontal();
+
+            var linkEls = sankeyG.append('g').attr('class', 'sankey-links')
+                .selectAll('path')
+                .data(links)
+                .enter()
+                .append('path')
+                .attr('d', linkPath)
+                .attr('stroke', function(d) { return linkColor(d); })
+                .attr('stroke-width', function(d) { return Math.max(1, d.width); })
+                .attr('fill', 'none')
+                .attr('opacity', 0);
+
+            // Animate links in with stagger
+            linkEls.transition()
+                .duration(500)
+                .delay(function(d, i) { return i * 100; })
+                .ease(d3.easeCubicInOut)
+                .attr('opacity', 1);
+
+            // Draw nodes
+            var nodeEls = sankeyG.append('g').attr('class', 'sankey-nodes')
+                .selectAll('rect')
+                .data(nodes)
+                .enter()
+                .append('rect')
+                .attr('x', function(d) { return d.x0; })
+                .attr('y', function(d) { return d.y0; })
+                .attr('width', function(d) { return d.x1 - d.x0; })
+                .attr('height', function(d) { return Math.max(1, d.y1 - d.y0); })
+                .attr('fill', function(d, i) { return nodeColor(i); })
+                .attr('rx', 3)
+                .attr('opacity', 0);
+
+            nodeEls.transition().duration(400).attr('opacity', 1);
+
+            // Node labels
+            var nodeLabelG = sankeyG.append('g').attr('class', 'sankey-node-labels');
+            nodes.forEach(function(d, i) {
+                var isRight = d.x0 > iW / 2;
+                var lx = isRight ? d.x1 + 6 : d.x0 - 6;
+                var ly = (d.y0 + d.y1) / 2;
+                var anchor = isRight ? 'start' : 'end';
+
+                nodeLabelG.append('text')
+                    .attr('x', lx)
+                    .attr('y', ly - 5)
+                    .attr('text-anchor', anchor)
+                    .attr('dominant-baseline', 'middle')
+                    .attr('font-size', '10px')
+                    .attr('font-weight', '700')
+                    .attr('fill', '#334155')
+                    .attr('opacity', 0)
+                    .text(d.name)
+                    .transition().delay(600).duration(400).attr('opacity', 1);
+
+                nodeLabelG.append('text')
+                    .attr('x', lx)
+                    .attr('y', ly + 8)
+                    .attr('text-anchor', anchor)
+                    .attr('dominant-baseline', 'middle')
+                    .attr('font-size', '9px')
+                    .attr('font-weight', '400')
+                    .attr('fill', '#64748b')
+                    .attr('opacity', 0)
+                    .text(function() {
+                        var val = d.value || 0;
+                        return formatSankeyValue(val);
+                    })
+                    .transition().delay(700).duration(400).attr('opacity', 1);
+            });
+        }
+
+        function hideSankey() {
+            sankeyG.transition().duration(400).attr('opacity', 0);
+        }
+
+        // =====================================================================
+        // STEP 6: Stock price area + line + 20-week moving average
+        // =====================================================================
         var stockAreaGen = d3.area()
             .x(function(d) { return xScale(d._date); })
             .y0(function() { return yScaleStock(minStock * 0.92); })
@@ -929,6 +1145,44 @@ export default function(component) {
         }
         var stockAnimated = false;
 
+        // 20-week moving average
+        var movingAvgData = parsedStock.map(function(d, i) {
+            var window20 = parsedStock.slice(Math.max(0, i - 19), i + 1);
+            return {
+                _date: d._date,
+                value: d3.mean(window20, function(x) { return x.value; })
+            };
+        });
+
+        var maLineGen = d3.line()
+            .x(function(d) { return xScale(d._date); })
+            .y(function(d) { return yScaleStock(d.value); })
+            .curve(d3.curveMonotoneX);
+
+        var maLine = g.append('path')
+            .datum(movingAvgData)
+            .attr('fill', 'none')
+            .attr('stroke', '#f97316')
+            .attr('stroke-width', 1.5)
+            .attr('stroke-dasharray', '5,3')
+            .attr('d', maLineGen)
+            .attr('opacity', 0);
+
+        // MA label at last point
+        var maLabelEl = null;
+        if (movingAvgData.length > 0) {
+            var lastMa = movingAvgData[movingAvgData.length - 1];
+            maLabelEl = g.append('text')
+                .attr('x', xScale(lastMa._date) + 6)
+                .attr('y', yScaleStock(lastMa.value))
+                .attr('dy', '0.35em')
+                .attr('font-size', '10px')
+                .attr('font-weight', '700')
+                .attr('fill', '#f97316')
+                .attr('opacity', 0)
+                .text('20-wk MA');
+        }
+
         // Peak annotation
         var peakRow = parsedStock.length ? parsedStock.reduce(function(a, b) { return b.value > a.value ? b : a; }) : null;
         var peakAnnotG = g.append('g').attr('opacity', 0);
@@ -947,31 +1201,32 @@ export default function(component) {
                 .text('FY24 peak');
         }
 
-        // ======================================================================
-        // HELPER: hide all data elements except the ones we want
-        // ======================================================================
+        // =====================================================================
+        // HELPER: hide all data elements
+        // =====================================================================
         function hideAll(fast) {
             var dur = fast ? 200 : 400;
             totalAreaPath.transition().duration(dur).attr('opacity', 0);
             totalLinePath.transition().duration(dur).attr('opacity', 0);
+            hideTreemap();
+            hideStreamGraph();
             segments.forEach(function(seg) {
-                stackedPaths[seg].transition().duration(dur).attr('opacity', 0);
-                stackedLabels[seg].transition().duration(dur).attr('opacity', 0);
-                stackedLabelBgs[seg].transition().duration(dur).attr('opacity', 0);
                 segLinePaths[seg].path.transition().duration(dur).attr('opacity', 0);
                 segLabelEls[seg].transition().duration(dur).attr('opacity', 0);
                 segLabelBgs[seg].transition().duration(dur).attr('opacity', 0);
             });
-            hideDrillDown();
+            hideSankey();
             stockAreaPath.transition().duration(dur).attr('opacity', 0);
             stockLinePath.transition().duration(dur).attr('opacity', 0);
+            maLine.transition().duration(dur).attr('opacity', 0);
+            if (maLabelEl) maLabelEl.transition().duration(dur).attr('opacity', 0);
             peakAnnotG.transition().duration(dur).attr('opacity', 0);
             kpiOverlay.style.opacity = '0';
         }
 
-        // ======================================================================
+        // =====================================================================
         // STEP ACTIVATIONS
-        // ======================================================================
+        // =====================================================================
         function activateStep(idx) {
             stepEls.forEach(function(el, i) {
                 el.style.opacity = i === idx ? '1' : '0.35';
@@ -986,36 +1241,33 @@ export default function(component) {
                 hideAll(false);
                 totalLineAnimated = false;
                 stockAnimated = false;
-                drillAnimated = false;
                 segments.forEach(function(seg) { segAnimated[seg] = false; });
                 styleYAxis(yScaleIncome, false);
                 drawGridlines(yScaleIncome);
 
-            // ----------- Step 1: total income line -----------
+            // ----------- Step 1: total income area + line (navy) -----------
             } else if (idx === 1) {
                 chartTitle.textContent = 'Group Operating Income';
                 chartTitle.style.opacity = '1';
 
-                // Reset non-relevant
+                hideTreemap();
+                hideStreamGraph();
                 segments.forEach(function(seg) {
-                    stackedPaths[seg].transition(t).attr('opacity', 0);
-                    stackedLabels[seg].transition(t).attr('opacity', 0);
-                    stackedLabelBgs[seg].transition(t).attr('opacity', 0);
                     segLinePaths[seg].path.transition(t).attr('opacity', 0)
                         .attr('stroke-dashoffset', segLinePaths[seg].len);
                     segLabelEls[seg].transition(t).attr('opacity', 0);
                     segLabelBgs[seg].transition(t).attr('opacity', 0);
                     segAnimated[seg] = false;
                 });
-                hideDrillDown();
+                hideSankey();
                 stockAreaPath.transition(t).attr('opacity', 0);
                 stockLinePath.transition(t).attr('opacity', 0);
+                maLine.transition(t).attr('opacity', 0);
+                if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
                 kpiOverlay.style.opacity = '0';
 
-                // Show total area immediately
                 totalAreaPath.transition(t).attr('opacity', 1);
-                // Draw total line once
                 if (!totalLineAnimated) {
                     totalLineAnimated = true;
                     totalLinePath.attr('opacity', 1)
@@ -1029,98 +1281,94 @@ export default function(component) {
                 styleYAxis(yScaleIncome, false);
                 drawGridlines(yScaleIncome);
 
-            // ----------- Step 2: stacked area bands -----------
+            // ----------- Step 2: animated treemap -----------
             } else if (idx === 2) {
-                chartTitle.textContent = 'Group Operating Income';
+                chartTitle.textContent = 'Group Operating Income — proportional split';
                 chartTitle.style.opacity = '1';
 
-                // Fade out total + segment lines
                 totalAreaPath.transition().duration(300).attr('opacity', 0);
                 totalLinePath.transition().duration(300).attr('opacity', 0);
+                hideStreamGraph();
                 segments.forEach(function(seg) {
                     segLinePaths[seg].path.transition().duration(300).attr('opacity', 0);
                     segLabelEls[seg].transition().duration(300).attr('opacity', 0);
                     segLabelBgs[seg].transition().duration(300).attr('opacity', 0);
                 });
-                hideDrillDown();
+                hideSankey();
                 stockAreaPath.transition(t).attr('opacity', 0);
                 stockLinePath.transition(t).attr('opacity', 0);
+                maLine.transition(t).attr('opacity', 0);
+                if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
                 kpiOverlay.style.opacity = '0';
 
-                // Animate stacked bands in after a brief delay
-                segments.forEach(function(seg) {
-                    stackedPaths[seg]
-                        .transition().delay(200).duration(900).ease(d3.easeCubicInOut)
-                        .attr('opacity', 1);
-                });
-                setTimeout(function() { if (currentStep === 2) { updateStackedLabels(1); } }, 1100);
+                // Hide axes for treemap
+                xAxisG.transition(t).attr('opacity', 0);
+                yAxisG.transition(t).attr('opacity', 0);
+                gridG.transition(t).attr('opacity', 0);
 
-                styleYAxis(yScaleIncome, false);
-                drawGridlines(yScaleIncome);
+                // Build and show treemap — set group visible immediately so rects
+                // animate themselves; avoids ghost rects from deferred callback racing
+                treemapG.attr('opacity', 1);
+                // Skip rebuild if treemap was already built at the current dimensions
+                if (!treemapBuilt) { buildTreemap(); }
 
-            // ----------- Step 3: individual segment lines (unstacked) -----------
+            // ----------- Step 3: stream graph -----------
             } else if (idx === 3) {
-                chartTitle.textContent = 'Segment Operating Income';
+                chartTitle.textContent = 'Revenue streams — five-year flow';
                 chartTitle.style.opacity = '1';
 
-                // Fade stacked bands
-                segments.forEach(function(seg) {
-                    stackedPaths[seg].transition().duration(400).attr('opacity', 0);
-                    stackedLabels[seg].transition().duration(400).attr('opacity', 0);
-                    stackedLabelBgs[seg].transition().duration(400).attr('opacity', 0);
-                });
+                hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
-                hideDrillDown();
+                segments.forEach(function(seg) {
+                    segLinePaths[seg].path.transition(t).attr('opacity', 0);
+                    segLabelEls[seg].transition(t).attr('opacity', 0);
+                    segLabelBgs[seg].transition(t).attr('opacity', 0);
+                });
+                hideSankey();
                 stockAreaPath.transition(t).attr('opacity', 0);
                 stockLinePath.transition(t).attr('opacity', 0);
+                maLine.transition(t).attr('opacity', 0);
+                if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
                 kpiOverlay.style.opacity = '0';
 
-                // Draw segment lines
+                // Restore axes for stream graph
+                xAxisG.transition(t).attr('opacity', 1);
+                yAxisG.transition(t).attr('opacity', 0); // stream graph hides Y axis (silhouette)
+                gridG.transition(t).attr('opacity', 0);  // no gridlines for stream
+
+                // Animate stream bands in with stagger
                 segments.forEach(function(seg, si) {
-                    var lp = segLinePaths[seg];
-                    if (!segAnimated[seg]) {
-                        segAnimated[seg] = true;
-                        lp.path
-                            .attr('stroke-width', 3)
-                            .attr('opacity', 1)
-                            .attr('stroke-dashoffset', lp.len)
-                            .transition().duration(900).delay(si * 150).ease(d3.easeCubicOut)
-                            .attr('stroke-dashoffset', 0);
-                    } else {
-                        lp.path.transition(t)
-                            .attr('stroke-width', 3).attr('opacity', 1)
-                            .attr('stroke-dashoffset', 0);
-                    }
+                    streamPaths[seg]
+                        .transition().delay(si * 80).duration(700).ease(d3.easeCubicInOut)
+                        .attr('opacity', 0.85);
                 });
-                setTimeout(function() { if (currentStep === 3) { updateSegmentLabels(1, yScaleSegs); } }, 800);
+                setTimeout(function() { if (currentStep === 3) { updateStreamLabels(1); } }, 900);
 
-                styleYAxis(yScaleSegs, false);
-                drawGridlines(yScaleSegs);
-
-            // ----------- Step 4: interactive selection -----------
+            // ----------- Step 4: interactive badge selection -----------
             } else if (idx === 4) {
                 chartTitle.textContent = 'Segment Operating Income';
                 chartTitle.style.opacity = '1';
 
+                hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
-                segments.forEach(function(seg) {
-                    stackedPaths[seg].transition(t).attr('opacity', 0);
-                    stackedLabels[seg].transition(t).attr('opacity', 0);
-                    stackedLabelBgs[seg].transition(t).attr('opacity', 0);
-                });
-                hideDrillDown();
+                hideStreamGraph();
+                hideSankey();
                 stockAreaPath.transition(t).attr('opacity', 0);
                 stockLinePath.transition(t).attr('opacity', 0);
+                maLine.transition(t).attr('opacity', 0);
+                if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
                 kpiOverlay.style.opacity = '0';
 
-                // Ensure segment lines are visible at equal weight, then apply
-                // the selection highlight AFTER the reset transition completes
-                // to avoid a race where both transitions fight over the same attrs.
+                // Restore axes
+                xAxisG.transition(t).attr('opacity', 1);
+                yAxisG.transition(t).attr('opacity', 1);
+                gridG.transition(t).attr('opacity', 1);
+
                 var resetT = d3.transition().duration(400).ease(d3.easeCubicInOut);
                 segments.forEach(function(seg) {
                     var lp = segLinePaths[seg];
@@ -1131,65 +1379,82 @@ export default function(component) {
                 });
                 updateSegmentLabels(1, yScaleSegs);
 
-                // Apply the currently selected segment highlight after reset ends
+                // Delay selectSegment until after resetT (400ms) so dashoffset
+                // animation completes before selectSegment interrupts with its own transition.
                 setTimeout(function() {
                     if (currentStep === 4) { selectSegment(selectedSeg); }
-                }, 0);
+                }, 450);
 
                 styleYAxis(yScaleSegs, false);
                 drawGridlines(yScaleSegs);
 
-            // ----------- Step 5: drill-down anatomy -----------
+            // ----------- Step 5: Sankey P&L diagram -----------
             } else if (idx === 5) {
                 var seg = selectedSeg;
-                var key = SEG_KEY[seg] || 'retail';
-                chartTitle.textContent = 'Inside ' + seg;
+                chartTitle.textContent = 'How ' + (SEG_SHORT[seg] || seg) + ' turns revenue into profit';
                 chartTitle.style.opacity = '1';
 
+                hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                hideStreamGraph();
                 segments.forEach(function(s) {
-                    stackedPaths[s].transition(t).attr('opacity', 0);
-                    stackedLabels[s].transition(t).attr('opacity', 0);
-                    stackedLabelBgs[s].transition(t).attr('opacity', 0);
                     segLinePaths[s].path.transition(t).attr('opacity', 0);
                     segLabelEls[s].transition(t).attr('opacity', 0);
                     segLabelBgs[s].transition(t).attr('opacity', 0);
                 });
                 stockAreaPath.transition(t).attr('opacity', 0);
                 stockLinePath.transition(t).attr('opacity', 0);
+                maLine.transition(t).attr('opacity', 0);
+                if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
                 kpiOverlay.style.opacity = '0';
 
-                // Build / rebuild drill-down (always rebuild on enter so selected seg is correct)
-                hideDrillDown();
-                drillAnimated = false;
-                setTimeout(function() {
-                    buildDrillDown(seg);
-                    drillAnimated = true;
-                }, 200);
+                // Hide regular axes — Sankey uses its own layout
+                xAxisG.transition(t).attr('opacity', 0);
+                yAxisG.transition(t).attr('opacity', 0);
+                gridG.transition(t).attr('opacity', 0);
 
-                var yD = getYScaleDrill(seg);
-                styleYAxis(yD, false);
-                drawGridlines(yD);
+                // Reset sankeyG and redraw (selectedSeg may have changed)
+                // Clear stale DOM nodes synchronously before the fade-in to avoid ghost flash
+                hideSankey();
+                sankeyG.selectAll('*').remove();
+                sankeyG.attr('opacity', 0);
 
-            // ----------- Step 6: share price -----------
+                function doDrawSankey() {
+                    sankeyG.transition().duration(300).attr('opacity', 1)
+                        .on('end', function() { drawSankey(); });
+                }
+
+                if (window.d3sankey) {
+                    doDrawSankey();
+                } else {
+                    loadD3Sankey().then(doDrawSankey).catch(function() {
+                        chartTitle.textContent = 'Sankey chart failed to load';
+                    });
+                }
+
+            // ----------- Step 6: share price + moving average -----------
             } else if (idx === 6) {
                 chartTitle.textContent = 'Share Price (A$)';
                 chartTitle.style.opacity = '1';
 
+                hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                hideStreamGraph();
                 segments.forEach(function(seg) {
-                    stackedPaths[seg].transition(t).attr('opacity', 0);
-                    stackedLabels[seg].transition(t).attr('opacity', 0);
-                    stackedLabelBgs[seg].transition(t).attr('opacity', 0);
                     segLinePaths[seg].path.transition(t).attr('opacity', 0);
                     segLabelEls[seg].transition(t).attr('opacity', 0);
                     segLabelBgs[seg].transition(t).attr('opacity', 0);
                 });
-                hideDrillDown();
+                hideSankey();
                 kpiOverlay.style.opacity = '0';
+
+                // Restore axes
+                xAxisG.transition(t).attr('opacity', 1);
+                yAxisG.transition(t).attr('opacity', 1);
+                gridG.transition(t).attr('opacity', 1);
 
                 stockAreaPath.transition(t).attr('opacity', 1);
                 if (!stockAnimated) {
@@ -1200,9 +1465,20 @@ export default function(component) {
                         .transition().duration(1100).ease(d3.easeCubicOut)
                         .attr('stroke-dashoffset', 0);
                     peakAnnotG.transition().delay(1000).duration(400).attr('opacity', 1);
+                    // Fade in MA line 700ms after main line appears
+                    maLine
+                        .transition().delay(700).duration(600).ease(d3.easeCubicOut)
+                        .attr('opacity', 0.9);
+                    if (maLabelEl) {
+                        maLabelEl
+                            .transition().delay(1200).duration(400)
+                            .attr('opacity', 1);
+                    }
                 } else {
                     stockLinePath.transition(t).attr('opacity', 1).attr('stroke-dashoffset', 0);
                     peakAnnotG.transition(t).attr('opacity', 1);
+                    maLine.transition(t).attr('opacity', 0.9);
+                    if (maLabelEl) maLabelEl.transition(t).attr('opacity', 1);
                 }
 
                 styleYAxis(yScaleStock, true);
@@ -1210,27 +1486,30 @@ export default function(component) {
 
             // ----------- Step 7: KPI scorecard -----------
             } else if (idx === 7) {
-                // Full reset first — clear all chart elements from any prior step to
-                // prevent ghost artifacts (drill-down areas, stacked bands, segment lines).
+                hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                hideStreamGraph();
                 segments.forEach(function(seg) {
-                    stackedPaths[seg].transition(t).attr('opacity', 0);
-                    stackedLabels[seg].transition(t).attr('opacity', 0);
-                    stackedLabelBgs[seg].transition(t).attr('opacity', 0);
                     segLinePaths[seg].path.transition(t).attr('opacity', 0);
                     segLabelEls[seg].transition(t).attr('opacity', 0);
                     segLabelBgs[seg].transition(t).attr('opacity', 0);
                 });
-                hideDrillDown();
+                hideSankey();
+
+                // Restore axes (stock backdrop)
+                xAxisG.transition(t).attr('opacity', 0.3);
+                yAxisG.transition(t).attr('opacity', 0.3);
+                gridG.transition(t).attr('opacity', 0.3);
 
                 chartTitle.style.opacity = '0.3';
                 stockAreaPath.transition(t).attr('opacity', 0.12);
                 stockLinePath.transition(t).attr('opacity', 0.12);
+                maLine.transition(t).attr('opacity', 0);
+                if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0.15);
                 kpiOverlay.style.opacity = '1';
 
-                // Count-up tween per KPI card
                 kpiValEls.forEach(function(item, ci) {
                     var target = kpis[item.spec.key];
                     if (target == null) {
@@ -1303,16 +1582,37 @@ export default function(component) {
                 xAxisG.selectAll('text').style('fill', '#94a3b8').style('font-size', '10px');
                 xAxisG.selectAll('line').attr('stroke', '#e2e8f0');
                 if (_lastYScale) drawGridlines(_lastYScale);
+
+                // Redraw static paths
                 totalAreaPath.attr('d', totalAreaGen);
                 totalLinePath.attr('d', totalLineGen);
                 segments.forEach(function(seg) {
-                    stackedPaths[seg].attr('d', stackedAreaGens[seg]);
                     segLinePaths[seg].path.attr('d', segLinePaths[seg].lineGen);
+                    streamPaths[seg].attr('d', streamAreaGen);
                 });
                 stockAreaPath.attr('d', stockAreaGen);
                 stockLinePath.attr('d', stockLineGen);
-                // Redraw drill-down paths when step 5 is active
-                if (currentStep === 5) { buildDrillDown(selectedSeg); }
+                maLine.attr('d', maLineGen);
+                if (maLabelEl && movingAvgData.length > 0) {
+                    var lastMa = movingAvgData[movingAvgData.length - 1];
+                    maLabelEl.attr('x', xScale(lastMa._date) + 6).attr('y', yScaleStock(lastMa.value));
+                }
+
+                // Reposition peak annotation after xScale change
+                if (peakRow) {
+                    var px = xScale(peakRow._date);
+                    var py = yScaleStock(peakRow.value);
+                    peakAnnotG.select('line').attr('x1', px).attr('x2', px).attr('y1', py).attr('y2', py + 30);
+                    peakAnnotG.select('text').attr('x', px).attr('y', py - 6);
+                }
+
+                // Reposition segment and stream labels after xScale change
+                if (currentStep === 3) { updateStreamLabels(1); }
+                if (currentStep === 4) { updateSegmentLabels(1, yScaleSegs); }
+
+                // Rebuild layout-dependent charts if active
+                if (currentStep === 2) { treemapBuilt = false; buildTreemap(); }
+                if (currentStep === 5 && window.d3sankey) { drawSankey(); }
             });
             ro.observe(svgEl);
             parentElement._resizeObserver = ro;
