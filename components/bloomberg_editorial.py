@@ -1,10 +1,9 @@
 """Bloomberg Red Meat editorial page — Streamlit V2 component.
 
-Two-column scrollytelling: left 45% text (8 sections × 100vh), right 55%
+Two-column scrollytelling: left 45% text (8 sections x 100vh), right 55%
 chart repositioned via window.scroll (NOT sticky — sticky breaks in Streamlit).
 """
 from __future__ import annotations
-import json
 import streamlit as st
 
 # ---------------------------------------------------------------------------
@@ -13,32 +12,30 @@ import streamlit as st
 _HTML = '<div id="blm_root" style="width:100%;"></div>'
 
 # ---------------------------------------------------------------------------
-# JS module — blm_v2
+# JS module — blm_v1
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* blm_v2 */
+/* blm_v1 */
 export default function(component) {
     const { parentElement, data } = component;
 
     // ---------------------------------------------------------------- guard
     if (!data || !data.monthly || !data.monthly.length) return;
 
-    // ---------------------------------------------------------------- cleanup
-    ['_blmScroll','_blmResize','_blmKeydown','_blmStyleEl'].forEach(function(k) {
+    // ---------------------------------------------------------------- cleanup previous render
+    ['_blmScroll','_blmResize','_blmKeydown'].forEach(function(k) {
         if (parentElement[k]) {
-            if (k === '_blmStyleEl') {
-                try { parentElement[k].remove(); } catch(e) {}
-            } else {
-                var evtName = k === '_blmScroll' ? 'scroll' : k === '_blmResize' ? 'resize' : 'keydown';
-                var target = (k === '_blmKeydown') ? document
-                    : (k === '_blmResize') ? window
-                    : (parentElement._blmScrollTarget || window);
-                try { target.removeEventListener(evtName, parentElement[k]); } catch(e) {}
-                if (k === '_blmScroll') { try { window.removeEventListener('scroll', parentElement[k]); } catch(e) {} }
-            }
+            var evtName = k === '_blmScroll' ? 'scroll'
+                        : k === '_blmResize' ? 'resize' : 'keydown';
+            var tgt = (k === '_blmKeydown') ? document : window;
+            try { tgt.removeEventListener(evtName, parentElement[k]); } catch(e) {}
             parentElement[k] = null;
         }
     });
+    if (parentElement._blmStyleEl) {
+        try { parentElement._blmStyleEl.remove(); } catch(e) {}
+        parentElement._blmStyleEl = null;
+    }
     if (parentElement._blmRO) {
         parentElement._blmRO.disconnect();
         parentElement._blmRO = null;
@@ -48,11 +45,11 @@ export default function(component) {
     if (!root) return;
     root.innerHTML = '';
 
-    var monthly   = data.monthly   || [];
-    var stock     = data.stock     || [];
-    var kpis      = data.kpis      || {};
-    var real_kpis = data.real_kpis || {};
-    var segments  = data.segments  || [];
+    var monthly    = data.monthly    || [];
+    var stock      = data.stock      || [];
+    var kpis       = data.kpis       || {};
+    var real_kpis  = data.real_kpis  || {};
+    var segments   = data.segments   || [];
     var commentary = data.commentary || {};
 
     // ---------------------------------------------------------------- load D3
@@ -60,11 +57,17 @@ export default function(component) {
         return new Promise(function(resolve, reject) {
             if (window.d3) { resolve(); return; }
             var ex = document.querySelector('script[data-d3]');
-            if (ex) { ex.addEventListener('load', resolve); ex.addEventListener('error', reject); return; }
+            if (ex) {
+                if (window.d3) { resolve(); return; }
+                ex.addEventListener('load', resolve);
+                ex.addEventListener('error', reject);
+                return;
+            }
             var s = document.createElement('script');
             s.setAttribute('data-d3', '1');
             s.src = 'https://unpkg.com/d3@7/dist/d3.min.js';
-            s.onload = resolve; s.onerror = reject;
+            s.onload = resolve;
+            s.onerror = reject;
             document.head.appendChild(s);
         });
     }
@@ -92,18 +95,18 @@ export default function(component) {
     });
 
     return function() {
-        ['_blmScroll','_blmResize'].forEach(function(k) {
+        ['_blmScroll','_blmResize','_blmKeydown'].forEach(function(k) {
             if (parentElement[k]) {
-                var evtName = k === '_blmScroll' ? 'scroll' : 'resize';
-                var target = (k === '_blmScroll') ? (parentElement._blmScrollTarget || window) : window;
-                try { target.removeEventListener(evtName, parentElement[k]); } catch(e) {}
-                if (k === '_blmScroll') { try { window.removeEventListener('scroll', parentElement[k]); } catch(e) {} }
+                var evtName = k === '_blmScroll' ? 'scroll'
+                            : k === '_blmResize' ? 'resize' : 'keydown';
+                var tgt = (k === '_blmKeydown') ? document : window;
+                try { tgt.removeEventListener(evtName, parentElement[k]); } catch(e) {}
                 parentElement[k] = null;
             }
         });
-        if (parentElement._blmKeydown) {
-            try { document.removeEventListener('keydown', parentElement._blmKeydown); } catch(e) {}
-            parentElement._blmKeydown = null;
+        if (parentElement._blmStyleEl) {
+            try { parentElement._blmStyleEl.remove(); } catch(e) {}
+            parentElement._blmStyleEl = null;
         }
         if (parentElement._blmRO) { parentElement._blmRO.disconnect(); parentElement._blmRO = null; }
     };
@@ -115,9 +118,9 @@ export default function(component) {
         var d3 = window.d3;
 
         var viewH = Math.max(700, window.innerHeight || 900);
-        var NUM_CHAPTERS = 8; // splash (0) + 7 content chapters
+        var NUM_CHAPTERS = 8; // splash(0) + chapters 1-7
 
-        // ---- Chapter backgrounds
+        // ---- Chapter backgrounds (per spec)
         var CH_BG = [
             '#1e3a5f',  // 0 splash navy
             '#ffffff',  // 1 white
@@ -129,8 +132,8 @@ export default function(component) {
             '#1e3a5f',  // 7 navy
         ];
 
-        // ---- Commentary (from Python via data.commentary, fallback built-in)
-        var BUILT_IN_COMMENTARY = {
+        // ---- Commentary from data (keys "0"–"6") with built-in fallbacks
+        var BUILT_IN = {
             0: { key_stat: 'A$30.2B', key_label: 'Cash Operating Income',
                  headline: 'CBA Posts Record A$30.2B Operating Income in FY26',
                  pull_quote: 'A$30.2B — five-year income record',
@@ -152,7 +155,7 @@ export default function(component) {
                  pull_quote: '45.5% CTI — record pre-provision profit of A$16.5B',
                  body: 'Opex of A$13.8B against A$30.2B income delivers a 45.5% CTI, improving 20bps year-on-year, with pre-provision profit at a record A$16.5B. Technology and compliance remain the largest cost drivers but the productivity overlay is working.' },
             5: { key_stat: '~20x', key_label: 'PE premium to peers',
-                 headline: "CBA's ~20x PE Premium Tests Patience at Cycle Peak",
+                 headline: 'CBA\'s ~20x PE Premium Tests Patience at Cycle Peak',
                  pull_quote: '~20x PE — can the franchise premium hold?',
                  body: 'CBA trades at ~20x forward earnings versus peers at 13-15x, supported by earnings quality, franchise dominance and a 505c DPS at a 78% payout ratio. NIM headwinds and rising credit costs raise questions about whether that premium is fully earned.' },
             6: { key_stat: '14.0%', key_label: 'Cash ROE plus 50bps',
@@ -161,30 +164,29 @@ export default function(component) {
                  body: 'Cash NPAT of A$11.0B, ROE of 14.0% (+50bps), EPS of 656.9c and DPS of 505c confirm CBA as Australia\'s highest-returning major bank. CET1 at 12.0% (-30bps) stays comfortably above APRA\'s 11.25% unquestionably strong benchmark.' },
         };
 
-        function getCommentary(idx) {
-            var raw = commentary && commentary[String(idx)];
-            if (!raw) raw = BUILT_IN_COMMENTARY[idx] || {};
-            return raw;
+        function getComm(idx) {
+            var raw = commentary && (commentary[String(idx)] || commentary[idx]);
+            return raw || BUILT_IN[idx] || {};
         }
 
         // ---- Segment config
         var SEG_COLORS = {
-            'Retail Banking Services':            '#2a78d6',
-            'Business Banking':                   '#eb6834',
-            'Institutional Banking and Markets':  '#1baf7a',
-            'New Zealand (ASB)':                  '#eda100',
+            'Retail Banking Services':           '#2a78d6',
+            'Business Banking':                  '#eb6834',
+            'Institutional Banking and Markets': '#1baf7a',
+            'New Zealand (ASB)':                 '#eda100',
         };
         var SEG_SHORT = {
-            'Retail Banking Services':            'Retail',
-            'Business Banking':                   'Business',
-            'Institutional Banking and Markets':  'IB&M',
-            'New Zealand (ASB)':                  'NZ',
+            'Retail Banking Services':           'Retail',
+            'Business Banking':                  'Business',
+            'Institutional Banking and Markets': 'IB&M',
+            'New Zealand (ASB)':                 'NZ',
         };
         var SEG_KEY = {
-            'Retail Banking Services':            'retail',
-            'Business Banking':                   'business',
-            'Institutional Banking and Markets':  'ibm',
-            'New Zealand (ASB)':                  'nz',
+            'Retail Banking Services':           'retail',
+            'Business Banking':                  'business',
+            'Institutional Banking and Markets': 'ibm',
+            'New Zealand (ASB)':                 'nz',
         };
         var REAL_DIV_NIM  = { 'Retail Banking Services': 2.50, 'Business Banking': 3.39, 'Institutional Banking and Markets': 0.87, 'New Zealand (ASB)': 2.30 };
         var REAL_DIV_CTI  = { 'Retail Banking Services': 39.3, 'Business Banking': 32.2, 'Institutional Banking and Markets': 40.6, 'New Zealand (ASB)': 46.4 };
@@ -197,39 +199,41 @@ export default function(component) {
             { label: 'ROE',              value: '14.0%',    change: '▲50bps', good: true,  sub: 'Return on equity' },
             { label: 'CET1 (APRA)',      value: '12.0%',    change: '▼30bps', good: false, sub: 'Capital adequacy' },
             { label: 'EPS (cash)',       value: '656.9c',   change: '▲7%',    good: true,  sub: 'Basic, continuing ops' },
-            { label: 'DPS',             value: '505c',     change: '▲4%',    good: true,  sub: 'FY26 total, fully franked' },
+            { label: 'DPS',              value: '505c',     change: '▲4%',    good: true,  sub: 'FY26 total, fully franked' },
             { label: 'LIE rate',         value: '8bps',     change: '▲1bp',   good: false, sub: 'Of gross loans & advances' },
             { label: 'Pre-prov. profit', value: '$16.5B',   change: '▲6%',    good: true,  sub: 'Pre-provision profit' },
         ];
 
-        // ---------------------------------------------------------------- inject fonts/styles
+        // ---------------------------------------------------------------- inject fonts + CSS
         var styleEl = document.createElement('style');
         styleEl.textContent = [
             '@import url("https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@300;400;500;600;700&display=swap");',
             '#blm_outer { display:flex; width:100%; min-height:' + (NUM_CHAPTERS * viewH) + 'px; position:relative; box-sizing:border-box; }',
             '#blm_left  { width:45%; flex-shrink:0; }',
             '#blm_right { width:55%; flex-shrink:0; position:relative; }',
-            '#blm_chart_col { position:absolute; top:0; left:0; width:100%; height:' + viewH + 'px; }',
+            '#blm_chart_col { position:absolute; top:0; left:0; width:100%; height:' + viewH + 'px; overflow:hidden; }',
             '.blm-section { min-height:' + viewH + 'px; display:flex; flex-direction:column; justify-content:center; padding:64px 56px 64px 64px; box-sizing:border-box; }',
-            '.blm-eyebrow { font-family:"Inter",sans-serif; font-size:11px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; margin-bottom:16px; opacity:0.7; }',
-            '.blm-key-stat { font-family:"Playfair Display",Georgia,serif; font-size:64px; font-weight:900; line-height:1.0; margin-bottom:8px; }',
+            '.blm-eyebrow   { font-family:"Inter",sans-serif; font-size:11px; font-weight:700; letter-spacing:0.14em; text-transform:uppercase; margin-bottom:16px; opacity:0.7; }',
+            '.blm-key-stat  { font-family:"Playfair Display",Georgia,serif; font-size:64px; font-weight:900; line-height:1.0; margin-bottom:8px; }',
             '.blm-key-label { font-family:"Inter",sans-serif; font-size:13px; font-weight:500; letter-spacing:0.05em; margin-bottom:28px; opacity:0.75; }',
-            '.blm-headline { font-family:"Playfair Display",Georgia,serif; font-size:28px; font-weight:700; line-height:1.25; margin-bottom:20px; }',
-            '.blm-pull { font-family:"Playfair Display",Georgia,serif; font-style:italic; font-size:17px; line-height:1.5; padding-left:20px; margin-bottom:24px; }',
-            '.blm-body { font-family:"Inter",sans-serif; font-size:14px; line-height:1.7; }',
-            '.blm-hr { border:none; border-top:1px solid rgba(255,255,255,0.25); margin:24px 0; width:80px; }',
-            '.blm-light .blm-eyebrow { color:#64748b; }',
-            '.blm-light .blm-key-stat { color:#1e3a5f; }',
+            '.blm-headline  { font-family:"Playfair Display",Georgia,serif; font-size:28px; font-weight:700; line-height:1.25; margin-bottom:20px; }',
+            '.blm-pull      { font-family:"Playfair Display",Georgia,serif; font-style:italic; font-size:17px; line-height:1.5; padding-left:20px; margin-bottom:24px; }',
+            '.blm-body      { font-family:"Inter",sans-serif; font-size:14px; line-height:1.7; }',
+            '.blm-hr        { border:none; border-top:1px solid rgba(255,255,255,0.25); margin:24px 0; width:80px; }',
+            // light (white / slate) backgrounds
+            '.blm-light .blm-eyebrow   { color:#64748b; }',
+            '.blm-light .blm-key-stat  { color:#1e3a5f; }',
             '.blm-light .blm-key-label { color:#475569; }',
-            '.blm-light .blm-headline { color:#1e3a5f; }',
-            '.blm-light .blm-pull { color:#334155; border-left:3px solid #2a78d6; }',
-            '.blm-light .blm-body { color:#475569; }',
-            '.blm-dark .blm-eyebrow { color:rgba(255,255,255,0.65); }',
-            '.blm-dark .blm-key-stat { color:#ffffff; }',
+            '.blm-light .blm-headline  { color:#1e3a5f; }',
+            '.blm-light .blm-pull      { color:#334155; border-left:3px solid #2a78d6; }',
+            '.blm-light .blm-body      { color:#475569; }',
+            // dark (navy / dark) backgrounds
+            '.blm-dark .blm-eyebrow   { color:rgba(255,255,255,0.65); }',
+            '.blm-dark .blm-key-stat  { color:#ffffff; }',
             '.blm-dark .blm-key-label { color:rgba(255,255,255,0.7); }',
-            '.blm-dark .blm-headline { color:#93c5fd; }',
-            '.blm-dark .blm-pull { color:#cbd5e1; border-left:3px solid #60a5fa; }',
-            '.blm-dark .blm-body { color:#cbd5e1; }',
+            '.blm-dark .blm-headline  { color:#93c5fd; }',
+            '.blm-dark .blm-pull      { color:#cbd5e1; border-left:3px solid #60a5fa; }',
+            '.blm-dark .blm-body      { color:#cbd5e1; }',
         ].join('\n');
         document.head.appendChild(styleEl);
         parentElement._blmStyleEl = styleEl;
@@ -239,28 +243,29 @@ export default function(component) {
         outer.id = 'blm_outer';
         root.appendChild(outer);
 
-        // ---- Left column: 8 text sections
+        // ====================================================================
+        // LEFT COLUMN — 8 text sections, each 100vh tall, scroll naturally
+        // ====================================================================
         var leftCol = document.createElement('div');
         leftCol.id = 'blm_left';
         outer.appendChild(leftCol);
 
-        // Splash section (chapter 0)
+        // ---- Splash (chapter 0): full navy, centered flex column
         var splashSection = document.createElement('div');
         splashSection.className = 'blm-section blm-dark';
-        splashSection.style.cssText = 'background:#1e3a5f;min-height:' + viewH + 'px;align-items:center;text-align:center;justify-content:center;';
+        splashSection.style.cssText = 'background:#1e3a5f; min-height:' + viewH + 'px; align-items:center; text-align:center; justify-content:center;';
         splashSection.innerHTML = [
-            '<div style="font-family:Inter,sans-serif;font-size:18px;font-weight:300;color:rgba(255,255,255,0.7);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:24px;">Commonwealth Bank</div>',
-            '<div style="font-family:\'Playfair Display\',Georgia,serif;font-size:96px;font-weight:900;color:#ffffff;line-height:1.0;margin-bottom:12px;">A$30.2B</div>',
-            '<div style="font-family:Inter,sans-serif;font-size:18px;font-weight:300;color:rgba(255,255,255,0.85);letter-spacing:0.04em;margin-bottom:24px;">FY26 Full Year Earnings</div>',
+            '<div style="font-family:\'Inter\',sans-serif;font-size:18px;font-weight:300;color:rgba(255,255,255,0.7);letter-spacing:0.08em;text-transform:uppercase;margin-bottom:24px;">Commonwealth Bank FY26 Earnings</div>',
+            '<div style="font-family:\'Playfair Display\',Georgia,serif;font-size:96px;font-weight:900;color:#ffffff;line-height:1.0;margin-bottom:16px;">A$30.2B</div>',
             '<hr class="blm-hr" style="margin:24px auto;">',
-            '<div style="font-family:Inter,sans-serif;font-size:12px;color:rgba(255,255,255,0.45);letter-spacing:0.06em;">Seven chapters. Scroll to explore.</div>',
+            '<div style="font-family:\'Inter\',sans-serif;font-size:12px;color:rgba(255,255,255,0.45);letter-spacing:0.06em;">Seven chapters. Scroll to explore.</div>',
         ].join('');
         leftCol.appendChild(splashSection);
 
-        // Chapters 1–7
+        // ---- Chapters 1–7: commentary from data, typography per spec
         var CHAPTER_NUMS = ['01','02','03','04','05','06','07'];
         for (var ci = 1; ci < NUM_CHAPTERS; ci++) {
-            var comm = getCommentary(ci - 1); // commentary keys 0-6 map to chapters 1-7
+            var comm = getComm(ci - 1); // commentary keys 0-6 map to chapters 1-7
             var bg = CH_BG[ci];
             var isDark = (bg === '#1e3a5f' || bg === '#0f172a');
             var themeClass = isDark ? 'blm-dark' : 'blm-light';
@@ -303,17 +308,18 @@ export default function(component) {
             leftCol.appendChild(sec);
         }
 
-        // ---- Right column: chart column (manually repositioned)
+        // ====================================================================
+        // RIGHT COLUMN — chart panel, manually repositioned via window.scroll
+        // ====================================================================
         var rightCol = document.createElement('div');
         rightCol.id = 'blm_right';
         outer.appendChild(rightCol);
 
         var chartCol = document.createElement('div');
         chartCol.id = 'blm_chart_col';
-        chartCol.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:' + viewH + 'px;overflow:hidden;';
         rightCol.appendChild(chartCol);
 
-        // ---------------------------------------------------------------- D3 setup
+        // ---------------------------------------------------------------- D3 scales
         var parseDate = d3.timeParse('%Y-%m-%d');
 
         var parsedMonthly = monthly.map(function(d) {
@@ -339,13 +345,6 @@ export default function(component) {
             .domain([0, maxIncome * 1.12])
             .range([cH - margin.bottom, margin.top]);
 
-        var maxSegVal = d3.max(segments, function(seg) {
-            return d3.max(parsedMonthly, function(d) { return +d[seg] || 0; });
-        }) || maxIncome * 0.5;
-        var yScaleSegs = d3.scaleLinear()
-            .domain([0, maxSegVal * 1.18])
-            .range([cH - margin.bottom, margin.top]);
-
         var maxStock = d3.max(parsedStock, function(d) { return d.value; }) || 1;
         var minStock = d3.min(parsedStock, function(d) { return d.value; }) || 0;
         var yScaleStock = d3.scaleLinear()
@@ -361,12 +360,12 @@ export default function(component) {
         var svg = d3.select(svgEl);
         var g = svg.append('g');
 
-        // ---- Background rect (changes with chapter)
+        // Background rect — transitions colour with each chapter
         var bgRect = svg.insert('rect', ':first-child')
             .attr('width', '100%').attr('height', cH)
             .attr('fill', '#1e3a5f');
 
-        // ---- Grid
+        // Grid
         var gridG = g.append('g').attr('class', 'blm-grid');
         function drawGrid(yScale) {
             var ticks = yScale.ticks(5);
@@ -375,11 +374,10 @@ export default function(component) {
                 .attr('y1', function(d) { return yScale(d); })
                 .attr('y2', function(d) { return yScale(d); })
                 .attr('stroke', 'rgba(100,116,139,0.25)')
-                .attr('stroke-dasharray', '4,3')
-                .attr('stroke-width', 1);
+                .attr('stroke-dasharray', '4,3').attr('stroke-width', 1);
         }
 
-        // ---- Axes
+        // Axes
         var xAxisG = g.append('g')
             .attr('transform', 'translate(0,' + (cH - margin.bottom) + ')')
             .attr('opacity', 0);
@@ -405,6 +403,7 @@ export default function(component) {
                 .on('end', function() { styleAxis(yAxisG); });
             drawGrid(yScale);
         }
+
         function hideAxes() {
             xAxisG.interrupt().transition().duration(300).attr('opacity', 0);
             yAxisG.interrupt().transition().duration(300).attr('opacity', 0);
@@ -412,7 +411,7 @@ export default function(component) {
         }
 
         // ==============================================================
-        // CHART 1: Group OI area + line (navy bg) — chapter 1
+        // CHART 1: Group OI area + line (chapter 1)
         // ==============================================================
         var totalAreaGen = d3.area()
             .x(function(d) { return xScale(d._date); })
@@ -424,12 +423,10 @@ export default function(component) {
             .y(function(d) { return yScaleIncome(+d.operating_income); })
             .curve(d3.curveMonotoneX);
 
-        var totalAreaPath = g.append('path')
-            .datum(parsedMonthly)
+        var totalAreaPath = g.append('path').datum(parsedMonthly)
             .attr('fill', 'rgba(42,120,214,0.15)')
             .attr('d', totalAreaGen).attr('opacity', 0);
-        var totalLinePath = g.append('path')
-            .datum(parsedMonthly)
+        var totalLinePath = g.append('path').datum(parsedMonthly)
             .attr('fill', 'none').attr('stroke', '#2a78d6').attr('stroke-width', 2.5)
             .attr('d', totalLineGen).attr('opacity', 0);
 
@@ -441,15 +438,15 @@ export default function(component) {
         });
         var totalAnimated = false;
 
+        // RBA annotations
         var annotG = g.append('g').attr('opacity', 0);
         var ANNOTS = [
             { date: '2022-05-01', label: 'Rate hiking begins', color: '#60a5fa' },
             { date: '2023-11-01', label: 'Peak 4.35%',         color: '#60a5fa' },
-            { date: '2025-02-01', label: 'RBA ↓ easing',       color: '#34d399' },
+            { date: '2025-02-01', label: 'RBA ↓ easing',  color: '#34d399' },
         ];
         ANNOTS.forEach(function(ann) {
-            var ad = parseDate(ann.date);
-            if (!ad) return;
+            var ad = parseDate(ann.date); if (!ad) return;
             var ax = xScale(ad);
             annotG.append('line').attr('x1', ax).attr('x2', ax)
                 .attr('y1', margin.top).attr('y2', cH - margin.bottom)
@@ -468,7 +465,7 @@ export default function(component) {
         }
 
         // ==============================================================
-        // CHART 2: Divisional TREEMAP — chapter 2
+        // CHART 2: Divisional TREEMAP (chapter 2)
         // ==============================================================
         var totalBySeg = {};
         segments.forEach(function(seg) { totalBySeg[seg] = 0; });
@@ -503,27 +500,26 @@ export default function(component) {
                 .attr('height', function(d) { return Math.max(0, d.y1 - d.y0); })
                 .attr('fill', function(d) { return SEG_COLORS[d.data.name] || '#888'; })
                 .attr('stroke', 'white').attr('stroke-width', 2).attr('rx', 4).attr('opacity', 0);
-            rects.transition().duration(400).delay(function(d,i){ return i*100; })
-                .attr('opacity', 1);
+            rects.transition().duration(400).delay(function(d, i) { return i * 100; }).attr('opacity', 1);
 
             var lblGs = tmG.selectAll('g.tml').data(leaves).enter().append('g')
                 .attr('class', 'tml').attr('opacity', 0).attr('pointer-events', 'none');
             lblGs.each(function(d) {
                 var w = d.x1 - d.x0, h = d.y1 - d.y0;
                 if (w < 80) return;
-                var cx = d.x0 + w/2, cy = d.y0 + h/2;
+                var cx = d.x0 + w / 2, cy = d.y0 + h / 2;
                 var pct = (d.data.value / totalAll * 100).toFixed(1) + '%';
-                var incStr = d.data.value > 1e9 ? 'A$' + (d.data.value/1e9).toFixed(1) + 'B' : 'A$' + d3.format('.3s')(d.data.value);
-                var npat = d.data.npat ? '$' + (d.data.npat/1000).toFixed(2) + 'B NPAT' : '';
+                var incStr = d.data.value > 1e9 ? 'A$' + (d.data.value / 1e9).toFixed(1) + 'B' : 'A$' + d3.format('.3s')(d.data.value);
+                var npat = d.data.npat ? '$' + (d.data.npat / 1000).toFixed(2) + 'B NPAT' : '';
                 d3.select(this).append('text').attr('x', cx).attr('y', cy - 14)
-                    .attr('text-anchor', 'middle').attr('font-size', Math.min(13, w/5) + 'px')
+                    .attr('text-anchor', 'middle').attr('font-size', Math.min(13, w / 5) + 'px')
                     .attr('font-weight', '700').attr('fill', 'white').text(d.data.short);
                 d3.select(this).append('text').attr('x', cx).attr('y', cy + 2)
-                    .attr('text-anchor', 'middle').attr('font-size', Math.min(11, w/6) + 'px')
-                    .attr('fill', 'rgba(255,255,255,0.9)').text(incStr + ' · ' + pct);
+                    .attr('text-anchor', 'middle').attr('font-size', Math.min(11, w / 6) + 'px')
+                    .attr('fill', 'rgba(255,255,255,0.9)').text(incStr + ' \xb7 ' + pct);
                 if (h > 60 && npat) {
                     d3.select(this).append('text').attr('x', cx).attr('y', cy + 16)
-                        .attr('text-anchor', 'middle').attr('font-size', Math.min(10, w/7) + 'px')
+                        .attr('text-anchor', 'middle').attr('font-size', Math.min(10, w / 7) + 'px')
                         .attr('fill', 'rgba(255,255,255,0.7)').text(npat);
                 }
             });
@@ -532,7 +528,7 @@ export default function(component) {
         }
 
         // ==============================================================
-        // CHART 3: STREAM GRAPH — chapter 3
+        // CHART 3: STREAM GRAPH (chapter 3)
         // ==============================================================
         var STACK_KEYS = segments.map(function(s) { return SEG_KEY[s]; });
         var stackInput = parsedMonthly.map(function(d) {
@@ -552,7 +548,7 @@ export default function(component) {
                 if (d[1] > streamYExt[1]) streamYExt[1] = d[1];
             });
         });
-        if (!isFinite(streamYExt[0])) streamYExt = [-maxIncome*0.5, maxIncome*0.5];
+        if (!isFinite(streamYExt[0])) streamYExt = [-maxIncome * 0.5, maxIncome * 0.5];
 
         var yScaleStream = d3.scaleLinear().domain(streamYExt).range([cH - margin.bottom, margin.top]);
 
@@ -584,10 +580,10 @@ export default function(component) {
         }
 
         // ==============================================================
-        // CHART 4: DIVISION CARDS OVERLAY — chapter 4
+        // CHART 4: DIVISION SELECTION CARDS (chapter 4)
         // ==============================================================
         var divCardsEl = document.createElement('div');
-        divCardsEl.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:5;';
+        divCardsEl.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:5;background:#1e3a5f;';
         chartCol.appendChild(divCardsEl);
         var divGrid = document.createElement('div');
         divGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:14px;width:580px;max-width:90%;';
@@ -597,9 +593,9 @@ export default function(component) {
 
         segments.forEach(function(seg, i) {
             var col = SEG_COLORS[seg] || '#888';
-            var nim  = REAL_DIV_NIM[seg]  != null ? REAL_DIV_NIM[seg].toFixed(2) + '%' : '—';
-            var cti  = REAL_DIV_CTI[seg]  != null ? REAL_DIV_CTI[seg].toFixed(1) + '%' : '—';
-            var npat = REAL_DIV_NPAT[seg] != null ? '$' + (REAL_DIV_NPAT[seg]/1000).toFixed(2) + 'B' : '—';
+            var nim  = REAL_DIV_NIM[seg]  != null ? REAL_DIV_NIM[seg].toFixed(2)  + '%' : '—';
+            var cti  = REAL_DIV_CTI[seg]  != null ? REAL_DIV_CTI[seg].toFixed(1)  + '%' : '—';
+            var npat = REAL_DIV_NPAT[seg] != null ? '$' + (REAL_DIV_NPAT[seg] / 1000).toFixed(2) + 'B' : '—';
             var card = document.createElement('div');
             card.style.cssText = 'background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);border-radius:12px;padding:22px 24px;border:2px solid rgba(255,255,255,0.12);cursor:pointer;transition:all 0.25s ease;transform:scale(0.85);opacity:0;';
             card.innerHTML = [
@@ -636,12 +632,12 @@ export default function(component) {
                 var col = SEG_COLORS[seg] || '#888';
                 if (seg === selectedSeg) {
                     card.style.borderColor = col;
-                    card.style.background = col + '22';
-                    card.style.boxShadow = '0 4px 24px ' + col + '44';
+                    card.style.background  = col + '22';
+                    card.style.boxShadow   = '0 4px 24px ' + col + '44';
                 } else {
                     card.style.borderColor = 'rgba(255,255,255,0.12)';
-                    card.style.background = 'rgba(255,255,255,0.08)';
-                    card.style.boxShadow = 'none';
+                    card.style.background  = 'rgba(255,255,255,0.08)';
+                    card.style.boxShadow   = 'none';
                 }
             });
         }
@@ -651,17 +647,20 @@ export default function(component) {
             segments.forEach(function(seg) {
                 var card = divCardEls[seg];
                 if (!card) return;
-                card.style.transform = 'scale(0.85)'; card.style.opacity = '0'; card.style.transition = 'none';
+                card.style.transform  = 'scale(0.85)';
+                card.style.opacity    = '0';
+                card.style.transition = 'none';
                 setTimeout(function() {
                     card.style.transition = 'transform 0.4s cubic-bezier(0.34,1.2,0.64,1),opacity 0.35s ease,border-color 0.25s,background 0.25s,box-shadow 0.25s';
-                    card.style.transform = 'scale(1)'; card.style.opacity = '1';
+                    card.style.transform  = 'scale(1)';
+                    card.style.opacity    = '1';
                 }, card._animDelay || 0);
             });
         }
         function hideDivCards() { divCardsEl.style.display = 'none'; }
 
         // ==============================================================
-        // CHART 5: SANKEY P&L — chapter 5
+        // CHART 5: SANKEY P&L (chapter 5)
         // ==============================================================
         var sankeyG = g.append('g')
             .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')')
@@ -673,7 +672,7 @@ export default function(component) {
             var totalOther = Math.max(d3.sum(parsedMonthly, function(d) { return +d['other_' + key] || 0; }), 1);
             var totalOpex  = d3.sum(parsedMonthly, function(d) { return +d['opex_'  + key] || 0; });
             var totalLie   = d3.sum(parsedMonthly, function(d) { return +d['lie_'   + key] || 0; });
-            var totalRev   = totalNii + totalOther;
+            var totalRev = totalNii + totalOther;
             var preProvision = Math.max(totalRev - totalOpex, 0);
             var opexLink = totalRev - preProvision;
             var npat = Math.max(preProvision - totalLie, 0);
@@ -681,7 +680,7 @@ export default function(component) {
             return { totalNii: totalNii, totalOther: totalOther, opexLink: opexLink, lieLink: lieLink, totalRev: totalRev, preProvision: preProvision, npat: npat };
         }
 
-        function fmtSank(v) { return 'A$' + d3.format('.3s')(v).replace('G','B'); }
+        function fmtSank(v) { return 'A$' + d3.format('.3s')(v).replace('G', 'B'); }
 
         function drawSankey() {
             if (!window.d3sankey) return;
@@ -735,15 +734,16 @@ export default function(component) {
             function lColor(link) {
                 var ti = link.target.index !== undefined ? link.target.index : link.target;
                 if (ti === 3 || ti === 5) return 'rgba(239,68,68,0.3)';
-                return d3.color(segCol) ? d3.color(segCol).copy({opacity:0.35}).formatRgb() : segCol + '55';
+                return d3.color(segCol) ? d3.color(segCol).copy({ opacity: 0.35 }).formatRgb() : segCol + '55';
             }
 
             var linkPath = dsk.sankeyLinkHorizontal();
             sankeyG.append('g').selectAll('path').data(links).enter().append('path')
-                .attr('d', linkPath).attr('stroke', function(d) { return lColor(d); })
+                .attr('d', linkPath)
+                .attr('stroke', function(d) { return lColor(d); })
                 .attr('stroke-width', function(d) { return Math.max(1, d.width); })
                 .attr('fill', 'none').attr('opacity', 0)
-                .transition().duration(500).delay(function(d,i){ return i*90; })
+                .transition().duration(500).delay(function(d, i) { return i * 90; })
                 .ease(d3.easeCubicInOut).attr('opacity', 1);
 
             sankeyG.append('g').selectAll('rect').data(nodes).enter().append('rect')
@@ -752,7 +752,7 @@ export default function(component) {
                 .attr('height', function(d) { return Math.max(1, d.y1 - d.y0); })
                 .attr('fill', function(d, i) { return nColor(i); })
                 .attr('rx', 3).attr('opacity', 0)
-                .transition().duration(400).delay(function(d,i){ return i*70; })
+                .transition().duration(400).delay(function(d, i) { return i * 70; })
                 .ease(d3.easeBackOut.overshoot(1.2)).attr('opacity', 1);
 
             var nlG = sankeyG.append('g');
@@ -780,7 +780,7 @@ export default function(component) {
                     nlG.append('text').attr('x', lx).attr('y', ly + 17)
                         .attr('text-anchor', anchor).attr('font-size', '8px').attr('font-weight', '600')
                         .attr('fill', '#4ade80').attr('opacity', 0)
-                        .text('FY26: $' + (divNpat/1000).toFixed(3) + 'B')
+                        .text('FY26: $' + (divNpat / 1000).toFixed(3) + 'B')
                         .transition().delay(800).duration(400).attr('opacity', 1);
                 }
             });
@@ -788,7 +788,7 @@ export default function(component) {
                 var opN = nodes[3];
                 if (opN) {
                     sankeyG.append('text')
-                        .attr('x', (opN.x0 + opN.x1)/2).attr('y', opN.y0 - 6)
+                        .attr('x', (opN.x0 + opN.x1) / 2).attr('y', opN.y0 - 6)
                         .attr('text-anchor', 'middle').attr('font-size', '8px')
                         .attr('font-weight', '700').attr('fill', '#f87171').attr('opacity', 0)
                         .text('CTI ' + divCti.toFixed(1) + '%')
@@ -798,7 +798,7 @@ export default function(component) {
         }
 
         // ==============================================================
-        // CHART 6: STOCK + 20-WEEK MA — chapter 6
+        // CHART 6: STOCK PRICE + 20-WEEK MA (chapter 6)
         // ==============================================================
         var stockAreaGen = d3.area()
             .x(function(d) { return xScale(d._date); })
@@ -853,11 +853,12 @@ export default function(component) {
             peakG.append('line').attr('x1', px).attr('x2', px).attr('y1', py).attr('y2', py + 28)
                 .attr('stroke', '#3b82f6').attr('stroke-width', 1).attr('stroke-dasharray', '3,2');
             peakG.append('text').attr('x', px).attr('y', py - 6).attr('text-anchor', 'middle')
-                .attr('font-size', '9px').attr('font-weight', '700').attr('fill', '#93c5fd').text('FY24 peak');
+                .attr('font-size', '9px').attr('font-weight', '700').attr('fill', '#93c5fd')
+                .text('FY24 peak');
         }
 
         // ==============================================================
-        // CHART 7: KPI GRID — chapter 7 (DOM overlay)
+        // CHART 7: KPI GRID (chapter 7 — DOM overlay)
         // ==============================================================
         var kpiGridEl = document.createElement('div');
         kpiGridEl.style.cssText = 'position:absolute;inset:0;display:none;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:12px;padding:40px;box-sizing:border-box;background:#1e3a5f;';
@@ -876,7 +877,6 @@ export default function(component) {
             ].join('');
             kpiGridEl.appendChild(tile);
         });
-
         var kpiFooter = document.createElement('div');
         kpiFooter.style.cssText = 'grid-column:1/-1;font-size:10px;color:rgba(255,255,255,0.25);text-align:center;align-self:end;';
         kpiFooter.textContent = 'Source: CBA Profit Announcement, year ended 30 June 2026. Chart data is illustrative.';
@@ -884,30 +884,26 @@ export default function(component) {
 
         function showKpiGrid() {
             kpiGridEl.style.display = 'grid';
-            var tiles = kpiGridEl.querySelectorAll('div[style*="translateY"]');
-            tiles.forEach(function(tile, ci) {
+            var tiles = Array.prototype.slice.call(kpiGridEl.querySelectorAll('div'));
+            // Only animate the 9 metric tiles (not the footer)
+            tiles.slice(0, FY26_KPI_TILES.length).forEach(function(tile, ci) {
+                tile.style.transform  = 'translateY(14px)';
+                tile.style.opacity    = '0';
+                tile.style.transition = 'none';
                 setTimeout(function() {
                     tile.style.transition = 'transform 0.45s cubic-bezier(0.34,1.2,0.64,1),opacity 0.4s ease';
-                    tile.style.transform = 'translateY(0)';
-                    tile.style.opacity = '1';
+                    tile.style.transform  = 'translateY(0)';
+                    tile.style.opacity    = '1';
                 }, ci * 65);
             });
         }
         function hideKpiGrid() {
             kpiGridEl.style.display = 'none';
-            var tiles = kpiGridEl.querySelectorAll('div[style*="opacity"]');
-            tiles.forEach(function(tile) {
-                tile.style.transform = 'translateY(14px)';
-                tile.style.opacity = '0';
-                tile.style.transition = 'none';
-            });
         }
 
         // ==============================================================
-        // CHAPTER ACTIVATION
+        // HIDE ALL CHARTS HELPER
         // ==============================================================
-        var currentChapter = -1;
-
         function hideAllCharts() {
             totalAreaPath.interrupt().transition().duration(300).attr('opacity', 0);
             totalLinePath.interrupt().transition().duration(300).attr('opacity', 0);
@@ -928,27 +924,31 @@ export default function(component) {
             hideAxes();
         }
 
+        // ==============================================================
+        // CHAPTER ACTIVATION
+        // ==============================================================
+        var currentChapter = -1;
+
         function activateChapter(ch) {
             if (ch === currentChapter) return;
             currentChapter = ch;
 
-            // Chart bg colour
-            var chBg = CH_BG[ch] || '#ffffff';
-            bgRect.transition().duration(500).attr('fill', chBg);
+            // Transition chart background colour
+            bgRect.interrupt().transition().duration(500).attr('fill', CH_BG[ch] || '#ffffff');
 
-            // Hide all, then show what belongs to this chapter
             hideAllCharts();
 
             if (ch === 0) {
-                // Splash: navy bg, no chart
+                // Splash: navy bg on right, no SVG chart
                 svgEl.style.opacity = '0';
+                divCardsEl.style.display = 'none';
                 return;
             }
 
             svgEl.style.opacity = '1';
 
             if (ch === 1) {
-                // Area income
+                // Income area + draw-on line
                 showAxes(yScaleIncome, false);
                 totalAreaPath.interrupt().transition().duration(800).ease(d3.easeCubicInOut).attr('opacity', 1);
                 if (!totalAnimated) {
@@ -963,8 +963,9 @@ export default function(component) {
             } else if (ch === 2) {
                 // Treemap
                 tmG.interrupt().attr('opacity', 1);
-                if (!tmBuilt) { buildTreemap(); }
-                else {
+                if (!tmBuilt) {
+                    buildTreemap();
+                } else {
                     tmG.selectAll('g.tml').interrupt().attr('opacity', 0)
                         .transition().delay(300).duration(400).attr('opacity', 1);
                 }
@@ -972,31 +973,30 @@ export default function(component) {
                 // Stream graph
                 showAxes(yScaleStream, false);
                 segments.forEach(function(seg, si) {
-                    streamPaths[seg].interrupt().transition().delay(si * 90).duration(700).ease(d3.easeCubicInOut).attr('opacity', 0.82);
+                    streamPaths[seg].interrupt()
+                        .transition().delay(si * 90).duration(700).ease(d3.easeCubicInOut).attr('opacity', 0.82);
                 });
                 setTimeout(function() { if (currentChapter === 3) { updateStreamLabels(1); } }, 900);
             } else if (ch === 4) {
-                // Division cards
+                // Division cards — navy bg, no SVG
                 svgEl.style.opacity = '0';
-                bgRect.attr('fill', '#1e3a5f');
                 showDivCards();
-                hideDivCards(); // immediately re-show via showDivCards proper
-                setTimeout(function() { showDivCards(); }, 50);
             } else if (ch === 5) {
                 // Sankey
                 bgRect.attr('fill', '#0f172a');
                 sankeyG.selectAll('*').remove();
+                sankeyG.interrupt().attr('opacity', 0);
                 if (window.d3sankey) {
                     drawSankey();
-                    sankeyG.interrupt().transition().duration(300).attr('opacity', 1);
+                    sankeyG.interrupt().transition().duration(300).ease(d3.easeQuadOut).attr('opacity', 1);
                 } else {
                     loadD3Sankey().then(function() {
                         drawSankey();
-                        sankeyG.interrupt().transition().duration(300).attr('opacity', 1);
+                        sankeyG.interrupt().transition().duration(300).ease(d3.easeQuadOut).attr('opacity', 1);
                     });
                 }
             } else if (ch === 6) {
-                // Stock + MA
+                // Stock + 20-week MA
                 showAxes(yScaleStock, true);
                 stockAreaPath.interrupt().transition().duration(600).attr('opacity', 1);
                 if (!stockAnimated) {
@@ -1017,64 +1017,56 @@ export default function(component) {
             } else if (ch === 7) {
                 // KPI grid
                 svgEl.style.opacity = '0';
-                bgRect.attr('fill', '#1e3a5f');
                 showKpiGrid();
             }
         }
 
         // ==============================================================
-        // SCROLL DRIVER: manually reposition chart column
-        // Streamlit scrolls inside section.stMain (NOT window) — find the
-        // real scroll container and measure against it.
+        // SCROLL DRIVER — spec pattern:
+        //   rootTop = parentElement.getBoundingClientRect().top + window.scrollY
+        //   scrolled = max(0, scrollY - rootTop)
+        //   chartCol.style.top = min(scrolled, maxOffset) + "px"
+        //   ch = floor(scrolled / viewH)
         // ==============================================================
-        function findScrollContainer(el) {
-            var node = el ? el.parentElement : null;
-            while (node && node !== document.body) {
-                var s = window.getComputedStyle(node);
-                if ((s.overflowY === 'auto' || s.overflowY === 'scroll') &&
-                    node.scrollHeight > node.clientHeight + 20) {
-                    return node;
-                }
-                node = node.parentElement;
-            }
-            return document.querySelector('section.stMain') || window;
-        }
-
-        var scrollContainer = findScrollContainer(outer);
+        var maxOffset = (NUM_CHAPTERS - 1) * viewH;
 
         function onScroll() {
-            // scrolled = how far the top of `outer` has moved above the
-            // scroll container's viewport top.
-            var oRect = outer.getBoundingClientRect();
-            var cTop = (scrollContainer === window || !scrollContainer.getBoundingClientRect)
-                ? 0 : scrollContainer.getBoundingClientRect().top;
-            var scrolled = Math.max(0, cTop - oRect.top);
-            var totalH = NUM_CHAPTERS * viewH;
-            var maxOffset = totalH - viewH;
-            var offset = Math.min(scrolled, maxOffset);
+            var scrollY  = window.scrollY || window.pageYOffset || 0;
+            var rootTop  = outer.getBoundingClientRect().top + scrollY;
+            var scrolled = Math.max(0, scrollY - rootTop);
+            var offset   = Math.min(scrolled, maxOffset);
 
             chartCol.style.top = offset + 'px';
 
-            // Chapter detection — switch when a section is half-visible.
-            var ch = Math.min(Math.floor((scrolled + viewH * 0.5) / viewH), NUM_CHAPTERS - 1);
+            // Chapter detection — spec: ch = floor(scrolled / viewH)
+            var ch = Math.min(Math.floor(scrolled / viewH), NUM_CHAPTERS - 1);
             activateChapter(ch);
         }
 
-        // Attach scroll listener to the REAL scroll container.
+        // Listen on both window scroll and any scrollable ancestor
         var scrollHandler = function() { onScroll(); };
-        scrollContainer.addEventListener('scroll', scrollHandler, { passive: true });
-        // Also listen on window as a fallback (some layouts scroll the window).
         window.addEventListener('scroll', scrollHandler, { passive: true });
         parentElement._blmScroll = scrollHandler;
-        parentElement._blmScrollTarget = scrollContainer;
 
-        // Resize: rebuild scales, redraw
+        // Also probe scrollable ancestors (Streamlit wraps content in section.stMain)
+        var node = outer.parentElement;
+        while (node && node !== document.body) {
+            var s = window.getComputedStyle(node);
+            if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && node.scrollHeight > node.clientHeight + 20) {
+                node.addEventListener('scroll', scrollHandler, { passive: true });
+                break;
+            }
+            node = node.parentElement;
+        }
+
+        // Resize handler
         var resizeHandler = function() {
             viewH = Math.max(700, window.innerHeight || 900);
             cW = Math.max(400, (parentElement.offsetWidth || 1200) * 0.55);
+            maxOffset = (NUM_CHAPTERS - 1) * viewH;
+
             xScale.range([margin.left, cW - margin.right]);
             yScaleIncome.range([cH - margin.bottom, margin.top]);
-            yScaleSegs.range([cH - margin.bottom, margin.top]);
             yScaleStream.range([cH - margin.bottom, margin.top]);
             yScaleStock.range([cH - margin.bottom, margin.top]);
 
@@ -1087,18 +1079,17 @@ export default function(component) {
 
             if (currentChapter === 2) { tmBuilt = false; buildTreemap(); }
             if (currentChapter === 3) { updateStreamLabels(1); }
-            if (currentChapter === 5 && window.d3sankey) { drawSankey(); }
+            if (currentChapter === 5 && window.d3sankey) { sankeyG.selectAll('*').remove(); drawSankey(); }
             if (maLabelEl && movingAvgData.length > 0) {
                 var lMa2 = movingAvgData[movingAvgData.length - 1];
                 maLabelEl.attr('x', xScale(lMa2._date) + 6).attr('y', yScaleStock(lMa2.value));
             }
-
             onScroll();
         };
         window.addEventListener('resize', resizeHandler);
         parentElement._blmResize = resizeHandler;
 
-        // Resize observer for iframe width changes
+        // ResizeObserver for iframe width changes
         if (window.ResizeObserver) {
             var ro = new ResizeObserver(function() { resizeHandler(); });
             ro.observe(parentElement);
@@ -1135,16 +1126,16 @@ def st_bloomberg_editorial(
     ----------
     data:
         Dictionary with keys:
-            monthly     — same format as st_scrollytelling
-            stock       — list of {date, value} weekly closes
-            kpis        — computed KPI metrics dict
-            real_kpis   — CBA FY26 actual KPIs dict
-            segments    — ordered list of segment name strings
-            commentary  — dict keyed "0"–"6" with headline/body/pull_quote/key_stat/key_label
+            monthly     -- same format as st_scrollytelling
+            stock       -- list of {date, value} weekly closes
+            kpis        -- computed KPI metrics dict
+            real_kpis   -- CBA FY26 actual KPIs dict
+            segments    -- ordered list of segment name strings
+            commentary  -- dict keyed "0"--"6" with headline/body/pull_quote/key_stat/key_label
     key:
         Unique Streamlit component key.
     height:
-        Pixel height allocated by Streamlit. 9000 for 8 × ~100vh sections.
+        Pixel height allocated by Streamlit. 9000 for 8 x ~100vh sections.
     """
     _bloomberg_editorial_component(
         data=data,

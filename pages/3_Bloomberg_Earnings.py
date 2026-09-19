@@ -1,6 +1,6 @@
-"""Bloomberg Red Meat editorial page — CBA FY26 Earnings.
+"""Bloomberg Red Meat editorial page -- CBA FY26 Earnings.
 
-Two-column scrollytelling: left 45% text sections (8 × 100vh), right 55%
+Two-column scrollytelling: left 45% text sections (8 x 100vh), right 55%
 chart panel repositioned via window.scroll.
 
 All figures grounded in CBA FY26 Profit Announcement (12 August 2026).
@@ -26,8 +26,8 @@ from data.generate import (
 )
 
 st.set_page_config(
-    page_title="Bloomberg Earnings — CBA FY26",
-    page_icon="📊",
+    page_title="Bloomberg Earnings -- CBA FY26",
+    page_icon="\U0001f4ca",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -257,12 +257,12 @@ def _build_kpis(seed: int = 42) -> dict:
     }
 
 
-# ---- Load commentary from JSON
 @st.cache_data(show_spinner=False)
 def _load_commentary() -> dict:
+    """Load AI commentary from data/commentary.json if it exists, else return {}."""
     commentary_path = pathlib.Path(__file__).parent.parent / "data" / "commentary.json"
     try:
-        with open(commentary_path, "r") as f:
+        with open(commentary_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -278,7 +278,7 @@ chart_data = {
     "commentary": _load_commentary(),
 }
 
-# 8 chapters × ~100vh each + buffer
+# 8 chapters x ~100vh each + generous buffer for Streamlit iframe
 st_bloomberg_editorial(chart_data, key="bloomberg", height=9000)
 
 st.caption(
