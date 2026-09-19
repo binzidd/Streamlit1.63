@@ -1,4 +1,4 @@
-"""Scrollytelling earnings story — Streamlit V2 component. Part-to-whole + interactive drill-down."""
+"""Scrollytelling earnings story — Streamlit V2 component. CFO-grade, grounded in CBA FY26 data."""
 from __future__ import annotations
 import streamlit as st
 
@@ -8,10 +8,10 @@ import streamlit as st
 _HTML = '<div id="st_scroll_root" style="width:100%;"></div>'
 
 # ---------------------------------------------------------------------------
-# JS module (D3 v7)
+# JS module (D3 v7) — v9
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* v8 */
+/* v11 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -35,15 +35,27 @@ export default function(component) {
         parentElement._styleEl.remove();
         parentElement._styleEl = null;
     }
+    // Remove stale kpiGrid if present from a previous render
+    if (parentElement._kpiGrid) {
+        try { parentElement._kpiGrid.remove(); } catch(e) {}
+        parentElement._kpiGrid = null;
+    }
+    // Remove stale scroll handler from a previous render
+    if (parentElement._scrollHandler && parentElement._scrollEl) {
+        parentElement._scrollEl.removeEventListener('scroll', parentElement._scrollHandler);
+        parentElement._scrollHandler = null;
+        parentElement._scrollEl = null;
+    }
     const root = parentElement.querySelector('#st_scroll_root');
     if (!root) return;
     root.innerHTML = '';
 
-    const viewH    = window.innerHeight || 800;
+    const viewH    = window.innerHeight || 900;
     const monthly  = data.monthly  || [];
     const stock    = data.stock    || [];
-    const kpis     = data.kpis     || {};
-    const segments = data.segments || [];
+    const kpis      = data.kpis      || {};
+    const real_kpis = data.real_kpis || {};  // passed from Python REAL_KPIS dict; available for future use
+    const segments  = data.segments  || [];
 
     // ---------------------------------------------------------------- D3 load
     function loadD3() {
@@ -54,7 +66,6 @@ export default function(component) {
                 if (window.d3) { resolve(); return; }
                 existing.addEventListener('load', resolve);
                 existing.addEventListener('error', reject);
-                // Guard: script already completed but window.d3 still missing
                 if (existing.readyState === 'loaded' || existing.readyState === 'complete') {
                     reject(new Error('d3 load failed'));
                 }
@@ -70,11 +81,8 @@ export default function(component) {
     }
 
     // ---------------------------------------------------------------- d3-sankey load
-    // d3-sankey@0.12.3 exports into window.d3 (adds .sankey, .sankeyLinkHorizontal etc.)
-    // so after load we alias window.d3sankey = window.d3 so callers can use dsk.sankey().
     function loadD3Sankey() {
         return new Promise(function(resolve, reject) {
-            // Already loaded: window.d3.sankey is available
             if (window.d3 && window.d3.sankey) {
                 window.d3sankey = window.d3;
                 resolve();
@@ -92,13 +100,20 @@ export default function(component) {
                     resolve();
                 });
                 existing.addEventListener('error', reject);
+                if (existing.readyState === 'loaded' || existing.readyState === 'complete') {
+                    if (window.d3 && window.d3.sankey) {
+                        window.d3sankey = window.d3;
+                        resolve();
+                    } else {
+                        reject(new Error('d3-sankey load failed'));
+                    }
+                }
                 return;
             }
             var s = document.createElement('script');
             s.setAttribute('data-d3sankey', '1');
             s.src = 'https://unpkg.com/d3-sankey@0.12.3/dist/d3-sankey.min.js';
             s.onload = function() {
-                // d3-sankey adds .sankey/.sankeyLinkHorizontal to window.d3
                 window.d3sankey = window.d3;
                 resolve();
             };
@@ -111,7 +126,7 @@ export default function(component) {
         root.innerHTML = '<p style="color:red;padding:12px;">D3 failed to load.</p>';
     });
 
-    // Return a real teardown to the V2 component runtime.
+    // Return teardown to V2 component runtime
     return function() {
         if (parentElement._storyObserver) {
             parentElement._storyObserver.disconnect();
@@ -129,6 +144,15 @@ export default function(component) {
             parentElement._styleEl.remove();
             parentElement._styleEl = null;
         }
+        if (parentElement._kpiGrid) {
+            try { parentElement._kpiGrid.remove(); } catch(e) {}
+            parentElement._kpiGrid = null;
+        }
+        if (parentElement._scrollHandler && parentElement._scrollEl) {
+            parentElement._scrollEl.removeEventListener('scroll', parentElement._scrollHandler);
+            parentElement._scrollHandler = null;
+            parentElement._scrollEl = null;
+        }
     };
 
     // =====================================================================
@@ -137,38 +161,66 @@ export default function(component) {
     function buildStory() {
         var d3 = window.d3;
 
+        // ------------------------------------------------ Real CBA FY26 divisional data
+        var REAL_DIV_NIM = {
+            "Retail Banking Services": 2.50,
+            "Business Banking": 3.39,
+            "Institutional Banking and Markets": 0.87,
+            "New Zealand (ASB)": 2.30
+        };
+        var REAL_DIV_CTI = {
+            "Retail Banking Services": 39.3,
+            "Business Banking": 32.2,
+            "Institutional Banking and Markets": 40.6,
+            "New Zealand (ASB)": 46.4
+        };
+        var REAL_DIV_NPAT = {
+            "Retail Banking Services": 5587,
+            "Business Banking": 4544,
+            "Institutional Banking and Markets": 1258,
+            "New Zealand (ASB)": 1112
+        };
+
+        // ------------------------------------------------ FY26 KPI scorecard data (hardcoded real values)
+        var FY26_KPI_TILES = [
+            { label: 'Cash NPAT',       value: '$10.98B', change: '▲7%',    up: true,  good: true,  sub: 'FY26 cash basis' },
+            { label: 'NIM',             value: '2.05%',   change: '▼3bps',  up: false, good: false, sub: 'Net interest margin' },
+            { label: 'CTI',             value: '45.5%',   change: '▼20bps', up: false, good: true,  sub: 'Cost-to-income ratio' },
+            { label: 'ROE',             value: '14.0%',   change: '▲50bps', up: true,  good: true,  sub: 'Return on equity' },
+            { label: 'CET1 (APRA)',     value: '12.0%',   change: '▼30bps', up: false, good: false, sub: 'Capital adequacy' },
+            { label: 'EPS (cash)',      value: '656.9c',  change: '▲7%',    up: true,  good: true,  sub: 'Basic, continuing ops' },
+            { label: 'DPS',             value: '505c',    change: '▲4%',    up: true,  good: true,  sub: 'FY26 total, fully franked' },
+            { label: 'LIE rate',        value: '8bps',    change: '▲1bp',   up: true,  good: false, sub: 'Of gross loans & advances' },
+            { label: 'Pre-prov. profit',value: '$16.5B',  change: '▲6%',    up: true,  good: true,  sub: 'Pre-provision profit' },
+        ];
+
         // ------------------------------------------------ segment config
         var SEG_COLORS = {
-            'Retail Banking Services':         '#2a78d6',
-            'Business Banking':                '#eb6834',
-            'Institutional Banking & Markets': '#1baf7a',
-            'New Zealand (ASB)':               '#eda100',
+            'Retail Banking Services':            '#2a78d6',
+            'Business Banking':                   '#eb6834',
+            'Institutional Banking and Markets':  '#1baf7a',
+            'New Zealand (ASB)':                  '#eda100',
         };
         var SEG_SHORT = {
-            'Retail Banking Services':         'Retail',
-            'Business Banking':                'Business',
-            'Institutional Banking & Markets': 'IB&M',
-            'New Zealand (ASB)':               'NZ',
+            'Retail Banking Services':            'Retail',
+            'Business Banking':                   'Business',
+            'Institutional Banking and Markets':  'IB&M',
+            'New Zealand (ASB)':                  'NZ',
         };
-        // Short key used for drill-down data fields
         var SEG_KEY = {
-            'Retail Banking Services':         'retail',
-            'Business Banking':                'business',
-            'Institutional Banking & Markets': 'ibm',
-            'New Zealand (ASB)':               'nz',
+            'Retail Banking Services':            'retail',
+            'Business Banking':                   'business',
+            'Institutional Banking and Markets':  'ibm',
+            'New Zealand (ASB)':                  'nz',
         };
         var SEG_TINTS = {
-            'Retail Banking Services':         '#2a78d61a',
-            'Business Banking':                '#eb68341a',
-            'Institutional Banking & Markets': '#1baf7a1a',
-            'New Zealand (ASB)':               '#eda1001a',
+            'Retail Banking Services':            '#2a78d61a',
+            'Business Banking':                   '#eb68341a',
+            'Institutional Banking and Markets':  '#1baf7a1a',
+            'New Zealand (ASB)':                  '#eda1001a',
         };
 
-        // KPI display helpers
-        var incomeGrowth = kpis.income_growth_pct != null ? kpis.income_growth_pct.toFixed(0) : '?';
-        var priceGrowth  = kpis.price_growth_pct  != null ? kpis.price_growth_pct.toFixed(0)  : '?';
-
-        // ------------------------------------------------ step copy (8 steps, idx 0-7)
+        // ------------------------------------------------ step copy
         var STEPS = [
             {
                 n: '00 / 07',
@@ -177,81 +229,105 @@ export default function(component) {
             },
             {
                 n: '01 / 07',
-                headline: 'Group income grew 24% in four years',
-                body: 'Group operating income grew from A$27B in FY22 to nearly A$33.5B by FY26. The trajectory was remarkably consistent: no single year delivered a step-change, but the compounding of 4–5% annual growth produced a result that rewarded patience.',
+                headline: 'Group income grew to A$30.2B in FY26',
+                body: 'Group operating income rose 6% to A$30.2B, extending a compounding trajectory that delivered 24% cumulative growth from FY22. The rate-hiking cycle that began in May 2022 initially tailwinds NIM, peaked at 4.35% in November 2023, before the RBA began easing in February 2025.',
             },
             {
                 n: '02 / 07',
                 headline: 'Four engines power the group',
-                body: 'Retail Banking leads at 45% of income. Business Banking contributes 24% with superior cost efficiency (CTI 38%). Institutional Banking & Markets delivers steady fee income at 18%. New Zealand (ASB) tracks the domestic cycle at 13%.',
+                body: 'Retail Banking leads at ~45% of income. Business Banking contributes with superior cost efficiency (CTI 32.2%). Institutional Banking & Markets delivers steady fee income. New Zealand (ASB) tracks its own domestic cycle — and was the weakest performer in FY26 (CTI +390bps).',
             },
             {
                 n: '03 / 07',
                 headline: 'Unstacked: divergence becomes clear',
-                body: 'Retail Banking\'s scale dominates, but Business Banking\'s steeper angle reflects its higher margin efficiency. IB&M is the steadiest line — fee income insulates it from rate-cycle noise. New Zealand tracks its own domestic cycle.',
+                body: 'Retail Banking\'s scale dominates, but Business Banking\'s steeper angle reflects its higher margin efficiency (NIM 3.39%, +7bps). IB&M is the steadiest line — fee income insulates it from rate-cycle noise. New Zealand tracks its own domestic cycle with NIM compressing.',
             },
             {
                 n: '04 / 07',
                 headline: 'Pick a division to explore',
-                body: 'Each division has a different anatomy of earnings. Click a segment below to see how its revenue, costs, and profit layer together. If you skip this step, the next chapter defaults to Retail Banking Services.',
+                body: 'Each division has a different anatomy of earnings. Click a segment below to see how its revenue, costs, and profit layer together. The next chapter defaults to Retail Banking Services if you skip.',
                 interactive: true,
             },
             {
                 n: '05 / 07',
-                headline: 'Anatomy of earnings',
-                body: 'Three forces determine every dollar of operating income: net interest income earned on the loan book, fee and other income layered on top, and operating expenses that consume the revenue stack. The gap that remains is operating income — the engine of dividends and growth.',
+                headline: 'Anatomy of earnings — FY26',
+                body: 'Three forces determine every dollar of profit: net interest income on the loan book, fee and other income on top, and operating expenses that consume the stack. The gap that remains is pre-provision profit — the engine of dividends and growth.',
             },
             {
                 n: '06 / 07',
                 headline: 'Market verdict — share price',
-                body: 'The market voted with its feet. A strong 2024 run-up — driven by earnings beats — pushed the stock to new highs before a mild 2025 plateau as credit normalisation concerns weighed on sentiment. The cumulative return still comfortably outpaced the broader market index.',
+                body: 'The market voted with its feet. A strong 2024 run-up driven by earnings beats pushed the stock to new highs before a mild 2025 plateau as credit normalisation concerns weighed. The cumulative return still comfortably outpaced the broader index.',
             },
             {
                 n: '07 / 07',
-                headline: 'Five years in six numbers',
-                body: 'Five years of rate cycles, a credit stress, and a market re-rating close with the bank ahead on every front. The numbers below are the trailing twelve-month snapshot — a synthetic illustration of what sustained compound growth looks like in Australian banking.',
+                headline: 'FY26 in nine numbers',
+                body: 'One rate cycle, a credit stress, and a market re-rating close with the bank ahead on every front. Cash NPAT rose 7% to $10.98B. ROE expanded 50bps to 14.0%. The board declared a fully franked DPS of 505 cents — up 4%.',
             },
         ];
 
         // ------------------------------------------------ closure state
-        var selectedSeg = parentElement._selectedSeg || 'Retail Banking Services';
+        var selectedSeg = parentElement._selectedSeg || (segments[0] || 'Retail Banking Services');
         var currentStep = -1;
+        var step4BadgesContainer = null;
 
         // ------------------------------------------------ scroll container
+        // NOTE: position:sticky is broken inside Streamlit because multiple ancestor
+        // elements have overflow:auto/hidden set by the framework.
+        // SOLUTION: Use a JS-scroll-driven layout:
+        //   - scrollContainer (root) is the scroll viewport (overflow-y:scroll)
+        //   - inner is a flex wrapper (no overflow) that holds the full scrollable height
+        //   - chartCol is position:absolute pinned to left=0,top=0 within scrollContainer
+        //   - A scroll event listener updates chartCol.style.top to follow scrollTop
+        //   - stepsCol is on the right with normal flow (takes the full content height)
         var scrollContainer = root;
         scrollContainer.style.cssText = [
             'position:relative',
             'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
             'background:#f8fafc',
-        ].join(';');
-
-        var inner = document.createElement('div');
-        inner.style.cssText = [
-            'display:flex',
-            'align-items:flex-start',
-            'position:relative',
-            'overflow-y:scroll',
+            'overflow-y:auto',
             'height:' + viewH + 'px',
         ].join(';');
-        scrollContainer.appendChild(inner);
 
-        // ---- LEFT sticky chart column (62%)
+        // inner: a full-height flex wrapper
+        var inner = scrollContainer;  // We use scrollContainer directly as the flex parent
+
+        // ---- LEFT "sticky" chart column — absolutely positioned, JS-driven
+        // Sits at position:absolute, left:0, top=scrollTop (updated on scroll)
         var chartCol = document.createElement('div');
         chartCol.style.cssText = [
-            'width:62%',
-            'position:sticky',
+            'width:63%',
+            'position:absolute',
+            'left:0',
             'top:0',
             'height:' + viewH + 'px',
-            'flex-shrink:0',
             'display:flex',
             'flex-direction:column',
-            'align-items:center',
-            'justify-content:center',
-            'padding:20px 12px 20px 24px',
+            'align-items:stretch',
+            'padding:16px 12px 16px 24px',
             'box-sizing:border-box',
             'background:#f8fafc',
+            'overflow:hidden',
+            'z-index:1',
         ].join(';');
-        inner.appendChild(chartCol);
+        scrollContainer.appendChild(chartCol);
+
+        // Scroll handler: keep chartCol pinned to viewport top
+        function onScrollUpdate() {
+            chartCol.style.top = scrollContainer.scrollTop + 'px';
+        }
+        scrollContainer.addEventListener('scroll', onScrollUpdate, { passive: true });
+        // Store for teardown
+        parentElement._scrollHandler = onScrollUpdate;
+        parentElement._scrollEl = scrollContainer;
+
+        // ---- chart header area (title + KPI strip)
+        var chartHeader = document.createElement('div');
+        chartHeader.style.cssText = [
+            'flex-shrink:0',
+            'margin-bottom:6px',
+            'padding-left:56px',
+        ].join(';');
+        chartCol.appendChild(chartHeader);
 
         // chart title
         var chartTitle = document.createElement('div');
@@ -260,95 +336,161 @@ export default function(component) {
             'font-variant:small-caps',
             'letter-spacing:0.08em',
             'color:#64748b',
-            'margin-bottom:6px',
-            'align-self:flex-start',
-            'margin-left:56px',
+            'margin-bottom:4px',
             'transition:opacity 0.4s',
         ].join(';');
         chartTitle.textContent = 'Group Operating Income — FY22 to FY26';
-        chartCol.appendChild(chartTitle);
+        chartHeader.appendChild(chartTitle);
 
-        // SVG
-        var svgHeight = viewH - 80;
-        var margin = { top:24, right:80, bottom:44, left:64 };
+        // ---- persistent KPI strip
+        var kpiStrip = document.createElement('div');
+        kpiStrip.style.cssText = [
+            'font-size:10px',
+            'color:#64748b',
+            'letter-spacing:0.03em',
+            'padding:3px 0 4px 0',
+            'border-top:1px solid #e2e8f0',
+            'border-bottom:1px solid #e2e8f0',
+            'margin-bottom:4px',
+            'white-space:nowrap',
+            'overflow:hidden',
+            'text-overflow:ellipsis',
+        ].join(';');
+        kpiStrip.innerHTML = [
+            '<span style="font-weight:700;color:#0f172a;">NPAT</span> $10.98B <span style="color:#16a34a;">▲7%</span>',
+            '<span style="color:#cbd5e1;margin:0 6px;">|</span>',
+            '<span style="font-weight:700;color:#0f172a;">NIM</span> 2.05% <span style="color:#dc2626;">▼3bps</span>',
+            '<span style="color:#cbd5e1;margin:0 6px;">|</span>',
+            '<span style="font-weight:700;color:#0f172a;">CTI</span> 45.5% <span style="color:#16a34a;">▼20bps</span>',
+            '<span style="color:#cbd5e1;margin:0 6px;">|</span>',
+            '<span style="font-weight:700;color:#0f172a;">ROE</span> 14.0% <span style="color:#16a34a;">▲50bps</span>',
+            '<span style="color:#cbd5e1;margin:0 6px;">|</span>',
+            '<span style="font-weight:700;color:#0f172a;">CET1</span> 12.0% <span style="color:#dc2626;">▼30bps</span>',
+            '<span style="color:#cbd5e1;margin:0 6px;">|</span>',
+            '<span style="font-weight:700;color:#0f172a;">EPS</span> 656.9c <span style="color:#16a34a;">▲7%</span>',
+            '<span style="color:#cbd5e1;margin:0 6px;">|</span>',
+            '<span style="font-weight:700;color:#0f172a;">DPS</span> 505c <span style="color:#16a34a;">▲4%</span>',
+        ].join('');
+        chartHeader.appendChild(kpiStrip);
+
+        // SVG (fills remaining height below header)
+        // Measure actual header height after DOM paint; fall back to 58px estimate
+        var headerH = (chartHeader && chartHeader.offsetHeight > 0) ? chartHeader.offsetHeight : 58;
+        var svgHeight = viewH - headerH - 32; // 32px = top+bottom padding
+        var margin = { top: 24, right: 80, bottom: 44, left: 64 };
 
         var svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svgEl.style.cssText = 'width:100%;height:' + svgHeight + 'px;overflow:visible;';
+        svgEl.style.cssText = 'width:100%;height:' + svgHeight + 'px;overflow:visible;flex:1 1 auto;';
         chartCol.appendChild(svgEl);
 
         var svg = d3.select(svgEl);
 
-        // ---- KPI overlay
-        var kpiOverlay = document.createElement('div');
-        kpiOverlay.style.cssText = [
+        // ---- KPI grid (DOM tiles, overlaid on chartCol for step 7)
+        var kpiGrid = document.createElement('div');
+        kpiGrid.style.cssText = [
             'position:absolute',
             'top:0',
             'left:0',
             'width:100%',
             'height:100%',
-            'display:grid',
+            'display:none',
             'grid-template-columns:1fr 1fr 1fr',
-            'grid-template-rows:auto auto',
-            'gap:12px',
-            'padding:40px 32px',
+            'grid-template-rows:1fr 1fr 1fr',
+            'gap:10px',
+            'padding:52px 20px 20px 20px',
             'box-sizing:border-box',
-            'pointer-events:none',
-            'opacity:0',
-            'transition:opacity 0.6s',
+            'background:rgba(248,250,252,0.98)',
+            'z-index:10',
             'align-content:center',
         ].join(';');
-        chartCol.appendChild(kpiOverlay);
+        chartCol.style.position = 'relative'; // ensure absolute child works
+        chartCol.appendChild(kpiGrid);
+        parentElement._kpiGrid = kpiGrid;
 
-        // KPI card specs
-        var KPI_SPECS = [
-            { label:'Share Price',      prefix:'A$', suffix:'',  decimals:2, key:'share_price' },
-            { label:'P/E Ratio',        prefix:'',   suffix:'x', decimals:1, key:'pe_ratio' },
-            { label:'Dividend Yield',   prefix:'',   suffix:'%', decimals:2, key:'div_yield' },
-            { label:'EPS (trailing)',   prefix:'A$', suffix:'',  decimals:4, key:'eps' },
-            { label:'Annual Income',    prefix:'A$', suffix:'B', decimals:1, key:'annual_income_b' },
-            { label:'Annual Cash NPAT', prefix:'A$', suffix:'B', decimals:1, key:'annual_npat_b' },
-        ];
-        var kpiValEls = [];
-        KPI_SPECS.forEach(function(spec, ci) {
-            var card = document.createElement('div');
-            card.style.cssText = [
+        // Build KPI tiles (static, animated on step 7 activate)
+        var kpiTileEls = [];
+        FY26_KPI_TILES.forEach(function(spec) {
+            var tile = document.createElement('div');
+            tile.style.cssText = [
                 'background:white',
-                'border-radius:12px',
-                'padding:18px',
+                'border-radius:10px',
+                'padding:14px 16px',
                 'border:1px solid #e2e8f0',
-                'box-shadow:0 2px 8px rgba(0,0,0,0.06)',
+                'box-shadow:0 2px 8px rgba(0,0,0,0.05)',
                 'display:flex',
                 'flex-direction:column',
-                'gap:6px',
+                'gap:3px',
+                'min-height:0',
             ].join(';');
+
             var lbl = document.createElement('div');
             lbl.textContent = spec.label;
-            lbl.style.cssText = 'font-size:0.7rem;font-variant:small-caps;letter-spacing:0.06em;color:#64748b;';
-            var val = document.createElement('div');
-            val.className = 'kpi-value';
-            val.style.cssText = 'font-size:1.3rem;font-weight:800;color:#0f172a;';
-            val.textContent = spec.prefix + '0' + spec.suffix;
-            card.appendChild(lbl);
-            card.appendChild(val);
-            kpiOverlay.appendChild(card);
-            kpiValEls.push({ el: val, spec: spec });
+            lbl.style.cssText = 'font-size:0.68rem;font-variant:small-caps;letter-spacing:0.07em;color:#64748b;';
+
+            var valRow = document.createElement('div');
+            valRow.style.cssText = 'display:flex;align-items:baseline;gap:6px;';
+
+            var valEl = document.createElement('div');
+            valEl.textContent = spec.value;
+            valEl.style.cssText = 'font-size:1.4rem;font-weight:800;color:#0f172a;line-height:1.1;';
+
+            var chgEl = document.createElement('div');
+            chgEl.textContent = spec.change;
+            var chgColor = spec.good ? '#16a34a' : '#dc2626';
+            chgEl.style.cssText = 'font-size:0.72rem;font-weight:700;color:' + chgColor + ';';
+
+            valRow.appendChild(valEl);
+            valRow.appendChild(chgEl);
+
+            var subEl = document.createElement('div');
+            subEl.textContent = spec.sub;
+            subEl.style.cssText = 'font-size:0.63rem;color:#94a3b8;margin-top:1px;';
+
+            tile.appendChild(lbl);
+            tile.appendChild(valRow);
+            tile.appendChild(subEl);
+            kpiGrid.appendChild(tile);
+            kpiTileEls.push({ tile: tile, valEl: valEl, spec: spec });
         });
 
-        // ---- RIGHT steps column (38%)
+        // KPI grid footer
+        var kpiFooter = document.createElement('div');
+        kpiFooter.style.cssText = [
+            'grid-column:1 / -1',
+            'font-size:0.6rem',
+            'color:#94a3b8',
+            'text-align:center',
+            'align-self:end',
+        ].join(';');
+        kpiFooter.textContent = 'Source: CBA Profit Announcement, year ended 30 June 2026. Chart data is illustrative.';
+        kpiGrid.appendChild(kpiFooter);
+
+        // ---- RIGHT steps column (37%)
+        // chartCol is position:absolute so stepsCol needs margin-left to clear it
         var stepsCol = document.createElement('div');
         stepsCol.style.cssText = [
-            'width:38%',
-            'flex-shrink:0',
-            'padding:0 24px 80px 16px',
+            'width:37%',
+            'margin-left:63%',
             'box-sizing:border-box',
-            'padding-top:20vh',
+            'padding:18vh 20px 80px 14px',
+            'pointer-events:all',
         ].join(';');
-        inner.appendChild(stepsCol);
+        scrollContainer.appendChild(stepsCol);
 
         // inject badge button styles
         var styleEl = document.createElement('style');
         styleEl.textContent = [
-            '.seg-badge { cursor:pointer; border-radius:20px; padding:9px 18px; font-weight:600; font-size:0.82rem; color:#0f172a; margin:4px; min-height:44px; transition:background 0.2s, color 0.2s; }',
+            '.seg-badge {',
+            '  cursor:pointer;',
+            '  border-radius:20px;',
+            '  padding:9px 16px;',
+            '  font-weight:600;',
+            '  font-size:0.80rem;',
+            '  margin:4px;',
+            '  min-height:40px;',
+            '  transition:background 0.2s, color 0.2s, opacity 0.2s;',
+            '  pointer-events:all;',
+            '}',
             '.seg-badge:hover { filter:brightness(0.92); }',
             '.seg-badge.active { color:white !important; }',
         ].join('\n');
@@ -356,36 +498,37 @@ export default function(component) {
         parentElement._styleEl = styleEl;
 
         var stepEls = [];
-        var step4BadgesContainer = null;
 
         STEPS.forEach(function(step, i) {
             var card = document.createElement('div');
             card.dataset.step = String(i);
+            var cardMinH = Math.round(viewH * 0.88);
             card.style.cssText = [
                 'background:white',
                 'border-radius:12px',
-                'padding:20px 24px',
+                'padding:20px 22px',
                 'border:1px solid #e2e8f0',
                 'margin-bottom:24px',
-                'min-height:' + (i === 0 ? Math.round(viewH * 0.8) : Math.round(viewH * 0.7)) + 'px',
+                'min-height:' + cardMinH + 'px',
                 'display:flex',
                 'flex-direction:column',
                 'justify-content:center',
                 'opacity:' + (i === 0 ? '1' : '0.35'),
                 'transition:opacity 0.4s',
+                'pointer-events:all',
             ].join(';');
 
             var counter = document.createElement('div');
             counter.textContent = step.n;
-            counter.style.cssText = 'font-variant:small-caps;font-size:0.72rem;letter-spacing:0.08em;color:#94a3b8;margin-bottom:10px;';
+            counter.style.cssText = 'font-variant:small-caps;font-size:0.70rem;letter-spacing:0.08em;color:#94a3b8;margin-bottom:10px;';
 
             var headline = document.createElement('div');
             headline.textContent = step.headline;
-            headline.style.cssText = 'font-size:1.2rem;font-weight:800;color:#0f172a;line-height:1.35;margin-bottom:12px;';
+            headline.style.cssText = 'font-size:1.15rem;font-weight:800;color:#0f172a;line-height:1.35;margin-bottom:12px;';
 
             var body = document.createElement('div');
             body.textContent = step.body;
-            body.style.cssText = 'font-size:0.87rem;color:#475569;line-height:1.7;';
+            body.style.cssText = 'font-size:0.85rem;color:#475569;line-height:1.7;';
 
             card.appendChild(counter);
             card.appendChild(headline);
@@ -394,12 +537,12 @@ export default function(component) {
             // Step 4 interactive badges
             if (step.interactive) {
                 var hint = document.createElement('div');
-                hint.style.cssText = 'font-size:0.78rem;color:#64748b;font-style:italic;margin-top:16px;margin-bottom:8px;';
-                hint.textContent = 'Tap a segment to explore its earnings anatomy';
+                hint.style.cssText = 'font-size:0.76rem;color:#64748b;font-style:italic;margin-top:18px;margin-bottom:8px;';
+                hint.textContent = 'Tap a segment to explore its earnings anatomy:';
                 card.appendChild(hint);
 
                 var badgesWrap = document.createElement('div');
-                badgesWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;';
+                badgesWrap.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;pointer-events:all;';
                 step4BadgesContainer = badgesWrap;
 
                 segments.forEach(function(seg) {
@@ -407,15 +550,16 @@ export default function(component) {
                     var btn = document.createElement('button');
                     btn.className = 'seg-badge';
                     btn.textContent = SEG_SHORT[seg] || seg;
-                    btn.style.cssText = [
-                        'background:' + (SEG_TINTS[seg] || '#eee'),
-                        'border:1px solid ' + col + '44',
-                        'border-left:4px solid ' + col,
-                        'color:#0f172a',
-                    ].join(';');
+                    btn.style.background = SEG_TINTS[seg] || '#eee';
+                    btn.style.border = '1px solid ' + col + '44';
+                    btn.style.borderLeft = '4px solid ' + col;
+                    btn.style.color = '#0f172a';
+                    btn.style.opacity = '1';
                     btn.dataset.seg = seg;
-                    btn.addEventListener('click', function() {
+                    btn.addEventListener('click', function(event) {
+                        event.stopPropagation();
                         selectSegment(seg);
+                        highlightSelected(seg);
                     });
                     badgesWrap.appendChild(btn);
                 });
@@ -443,11 +587,10 @@ export default function(component) {
         }).filter(function(d) { return d._date; });
 
         function getW() { return svgEl.getBoundingClientRect().width || 640; }
-
         function innerW() { return getW() - margin.left - margin.right; }
         function innerH() { return svgHeight - margin.top - margin.bottom; }
 
-        // Unified X domain
+        // Unified X domain across all data
         var allDates = parsedMonthly.map(function(d) { return d._date; })
             .concat(parsedStock.map(function(d) { return d._date; }));
         var xScale = d3.scaleTime()
@@ -457,7 +600,7 @@ export default function(component) {
         // Y scales
         var maxIncome = d3.max(parsedMonthly, function(d) { return +d.operating_income; }) || 1;
         var yScaleIncome = d3.scaleLinear()
-            .domain([0, maxIncome * 1.1])
+            .domain([0, maxIncome * 1.12])
             .range([svgHeight - margin.bottom, margin.top]);
 
         var maxSegVal = d3.max(segments, function(seg) {
@@ -470,7 +613,7 @@ export default function(component) {
         var maxStock = d3.max(parsedStock, function(d) { return d.value; }) || 1;
         var minStock = d3.min(parsedStock, function(d) { return d.value; }) || 0;
         var yScaleStock = d3.scaleLinear()
-            .domain([minStock * 0.92, maxStock * 1.05])
+            .domain([minStock * 0.95, maxStock * 1.05])
             .range([svgHeight - margin.bottom, margin.top]);
 
         var _lastYScale = yScaleIncome;
@@ -505,11 +648,12 @@ export default function(component) {
         xAxisG.selectAll('line').attr('stroke', '#e2e8f0');
 
         // ---- Y axis
+        var incFmt = function(d) {
+            return 'A$' + d3.format('.2s')(d).replace('G','B').replace('M','M');
+        };
         var yAxisG = g.append('g')
             .attr('transform', 'translate(' + margin.left + ',0)')
-            .call(d3.axisLeft(yScaleIncome).ticks(6)
-                .tickFormat(function(d) { return 'A$' + d3.format('.2s')(d).replace('G','B'); })
-                .tickSizeOuter(0));
+            .call(d3.axisLeft(yScaleIncome).ticks(6).tickFormat(incFmt).tickSizeOuter(0));
         yAxisG.select('.domain').remove();
         yAxisG.selectAll('text').style('fill', '#94a3b8').style('font-size', '10px');
         yAxisG.selectAll('line').attr('stroke', '#e2e8f0');
@@ -518,7 +662,7 @@ export default function(component) {
             _lastYScale = yScale;
             var fmt = isStock
                 ? function(d) { return 'A$' + d.toFixed(0); }
-                : function(d) { return 'A$' + d3.format('.2s')(d).replace('G','B'); };
+                : function(d) { return 'A$' + d3.format('.2s')(d).replace('G','B').replace('M','M'); };
             yAxisG.transition().duration(600).ease(d3.easeCubicInOut)
                 .call(d3.axisLeft(yScale).ticks(6).tickFormat(fmt).tickSizeOuter(0))
                 .on('end', function() {
@@ -529,7 +673,7 @@ export default function(component) {
         }
 
         // =====================================================================
-        // STEP 1: total income area + line (navy) — KEEP
+        // STEP 1: total income area + line (navy) + event annotations
         // =====================================================================
         var totalAreaGen = d3.area()
             .x(function(d) { return xScale(d._date); })
@@ -544,14 +688,14 @@ export default function(component) {
 
         var totalAreaPath = g.append('path')
             .datum(parsedMonthly)
-            .attr('fill', 'rgba(51,65,85,0.10)')
+            .attr('fill', 'rgba(30,58,95,0.09)')
             .attr('d', totalAreaGen)
             .attr('opacity', 0);
 
         var totalLinePath = g.append('path')
             .datum(parsedMonthly)
             .attr('fill', 'none')
-            .attr('stroke', '#334155')
+            .attr('stroke', '#1e3a5f')
             .attr('stroke-width', 2.5)
             .attr('d', totalLineGen)
             .attr('opacity', 0);
@@ -572,11 +716,64 @@ export default function(component) {
         }
         var totalLineAnimated = false;
 
+        // ---- Event annotations group (fades in after line draw)
+        var annotG = g.append('g').attr('opacity', 0).attr('class', 'annot-group');
+
+        // Helper: parse annotation dates
+        var annotParseDate = d3.timeParse('%Y-%m-%d');
+
+        // Annotation definitions
+        var ANNOTS = [
+            { date: '2022-05-01', label: 'Rate hiking begins',  color: '#1e3a5f', desc: 'Rate hiking begins' },
+            { date: '2023-11-01', label: 'Peak 4.35%',   color: '#1e3a5f', desc: 'Rates peak' },
+            { date: '2025-02-01', label: 'RBA ↓ easing', color: '#16a34a', desc: 'First cut' },
+        ];
+
+        ANNOTS.forEach(function(ann) {
+            var ad = annotParseDate(ann.date);
+            if (!ad) return;
+            var ax = xScale(ad);
+            var top = margin.top;
+            var bot = svgHeight - margin.bottom;
+
+            annotG.append('line')
+                .attr('x1', ax).attr('x2', ax)
+                .attr('y1', top).attr('y2', bot)
+                .attr('stroke', ann.color)
+                .attr('stroke-width', 1)
+                .attr('stroke-dasharray', '4 4');
+
+            annotG.append('text')
+                .attr('x', ax + 3)
+                .attr('y', top + 4)
+                .attr('font-size', '9px')
+                .attr('font-weight', '600')
+                .attr('fill', ann.color)
+                .text(ann.label);
+        });
+
+        // Endpoint label at last data point
+        var lastMonthly = parsedMonthly.length ? parsedMonthly[parsedMonthly.length - 1] : null;
+        if (lastMonthly) {
+            var epx = xScale(lastMonthly._date);
+            var epy = yScaleIncome(+lastMonthly.operating_income);
+            annotG.append('circle')
+                .attr('cx', epx).attr('cy', epy)
+                .attr('r', 4)
+                .attr('fill', '#1e3a5f');
+            annotG.append('text')
+                .attr('x', epx + 8)
+                .attr('y', epy)
+                .attr('dy', '0.35em')
+                .attr('font-size', '11px')
+                .attr('font-weight', '700')
+                .attr('fill', '#1e3a5f')
+                .text('FY26: A$30.2B ▲6%');
+        }
+
         // =====================================================================
         // STEP 2: ANIMATED TREEMAP — segment proportional split
         // =====================================================================
-
-        // Compute annual totals per segment across full period
         var totalBySeg = {};
         segments.forEach(function(seg) { totalBySeg[seg] = 0; });
         parsedMonthly.forEach(function(d) {
@@ -586,26 +783,26 @@ export default function(component) {
         });
         var totalAll = segments.reduce(function(s, seg) { return s + totalBySeg[seg]; }, 0) || 1;
 
-        // Container group for all treemap elements — positioned at chart area origin
         var treemapG = g.append('g')
             .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')')
             .attr('opacity', 0);
 
-        var treemapRects  = null;
-        var treemapLabels = null;
-        var treemapBuilt  = false;
+        var treemapBuilt = false;
 
         function buildTreemap() {
             var iW = innerW();
             var iH = innerH();
-
-            // Clear previous content
             treemapG.selectAll('*').remove();
 
             var rootData = {
                 name: 'Group',
                 children: segments.map(function(seg) {
-                    return { name: seg, value: totalBySeg[seg] };
+                    return {
+                        name: seg,
+                        value: totalBySeg[seg],
+                        npat: REAL_DIV_NPAT[seg] || 0,
+                        short: SEG_SHORT[seg] || seg,
+                    };
                 })
             };
 
@@ -619,28 +816,20 @@ export default function(component) {
                 .round(true);
 
             treemapLayout(hierarchy);
-
             var leaves = hierarchy.leaves();
 
-            // Rects — start collapsed to full canvas, animate to treemap positions
-            treemapRects = treemapG.selectAll('rect.tm-rect')
+            var rects = treemapG.selectAll('rect.tm-rect')
                 .data(leaves)
                 .enter()
                 .append('rect')
                 .attr('class', 'tm-rect')
-                .attr('x', 0)
-                .attr('y', 0)
-                .attr('width', iW)
-                .attr('height', iH)
+                .attr('x', 0).attr('y', 0)
+                .attr('width', iW).attr('height', iH)
                 .attr('fill', function(d) { return SEG_COLORS[d.data.name] || '#888'; })
-                .attr('stroke', 'white')
-                .attr('stroke-width', 2)
-                .attr('rx', 4)
-                .attr('opacity', 0);
+                .attr('stroke', 'white').attr('stroke-width', 2)
+                .attr('rx', 4).attr('opacity', 0);
 
-            // Animate rects in: fade in then transition to treemap position
-            treemapRects
-                .transition().duration(200).ease(d3.easeQuadIn)
+            rects.transition().duration(200).ease(d3.easeQuadIn)
                 .attr('opacity', 1)
                 .transition().duration(600).ease(d3.easeCubicInOut)
                 .attr('x', function(d) { return d.x0; })
@@ -648,8 +837,7 @@ export default function(component) {
                 .attr('width', function(d) { return Math.max(0, d.x1 - d.x0); })
                 .attr('height', function(d) { return Math.max(0, d.y1 - d.y0); });
 
-            // Labels: short name + share %, centered in rect, hidden for small rects
-            treemapLabels = treemapG.selectAll('g.tm-label')
+            var labelGs = treemapG.selectAll('g.tm-label')
                 .data(leaves)
                 .enter()
                 .append('g')
@@ -657,41 +845,48 @@ export default function(component) {
                 .attr('opacity', 0)
                 .attr('pointer-events', 'none');
 
-            treemapLabels.each(function(d) {
+            labelGs.each(function(d) {
                 var w = d.x1 - d.x0;
                 var h = d.y1 - d.y0;
-                if (w < 80) return; // hide label for small rects
+                if (w < 80) return;
                 var cx = d.x0 + w / 2;
                 var cy = d.y0 + h / 2;
                 var pct = (d.data.value / totalAll * 100).toFixed(1) + '%';
-                var shortName = SEG_SHORT[d.data.name] || d.data.name;
+                var npat = d.data.npat ? '$' + (d.data.npat / 1000).toFixed(2) + 'B NPAT' : '';
+                // Format absolute income value
+                var incomeVal = d.data.value;
+                var incomeStr = incomeVal > 1e9
+                    ? 'A$' + (incomeVal / 1e9).toFixed(1) + 'B'
+                    : 'A$' + d3.format('.3s')(incomeVal).replace('G','B');
 
                 d3.select(this).append('text')
-                    .attr('x', cx)
-                    .attr('y', cy - 8)
+                    .attr('x', cx).attr('y', cy - 14)
                     .attr('text-anchor', 'middle')
-                    .attr('dominant-baseline', 'middle')
-                    .attr('font-size', Math.min(14, w / 6) + 'px')
+                    .attr('font-size', Math.min(13, w / 5) + 'px')
                     .attr('font-weight', '700')
                     .attr('fill', 'white')
-                    .text(shortName);
+                    .text(d.data.short);
 
                 d3.select(this).append('text')
-                    .attr('x', cx)
-                    .attr('y', cy + 12)
+                    .attr('x', cx).attr('y', cy + 2)
                     .attr('text-anchor', 'middle')
-                    .attr('dominant-baseline', 'middle')
-                    .attr('font-size', Math.min(12, w / 7) + 'px')
+                    .attr('font-size', Math.min(11, w / 6) + 'px')
                     .attr('font-weight', '400')
-                    .attr('fill', 'rgba(255,255,255,0.85)')
-                    .text(pct);
+                    .attr('fill', 'rgba(255,255,255,0.9)')
+                    .text(incomeStr + ' · ' + pct);
+
+                if (h > 60 && npat) {
+                    d3.select(this).append('text')
+                        .attr('x', cx).attr('y', cy + 16)
+                        .attr('text-anchor', 'middle')
+                        .attr('font-size', Math.min(10, w / 7) + 'px')
+                        .attr('font-weight', '400')
+                        .attr('fill', 'rgba(255,255,255,0.75)')
+                        .text(npat);
+                }
             });
 
-            // Fade labels in after rects fully settle (200ms fade-in + 600ms position = 800ms total, +50ms buffer)
-            treemapLabels
-                .transition().delay(850).duration(400)
-                .attr('opacity', 1);
-
+            labelGs.transition().delay(850).duration(400).attr('opacity', 1);
             treemapBuilt = true;
         }
 
@@ -702,8 +897,6 @@ export default function(component) {
         // =====================================================================
         // STEP 3: STREAM GRAPH — five-year revenue flow
         // =====================================================================
-
-        // Build stack with silhouette offset
         var STACK_KEYS = segments.map(function(s) { return SEG_KEY[s]; });
 
         var stackInput = parsedMonthly.map(function(d) {
@@ -721,7 +914,6 @@ export default function(component) {
 
         var streamSeries = streamStack(stackInput);
 
-        // Compute Y extent from all stacked values
         var streamYExtent = [Infinity, -Infinity];
         streamSeries.forEach(function(series) {
             series.forEach(function(d) {
@@ -747,29 +939,26 @@ export default function(component) {
 
         segments.forEach(function(seg, si) {
             var series = streamSeries[si];
-            var col    = SEG_COLORS[seg] || '#888';
-            var key    = SEG_KEY[seg];
+            var col = SEG_COLORS[seg] || '#888';
 
             var p = g.append('path')
                 .datum(series)
                 .attr('fill', col)
-                .attr('fill-opacity', 0.85)
+                .attr('fill-opacity', 0.82)
                 .attr('stroke', 'none')
                 .attr('d', streamAreaGen)
-                .attr('opacity', 0);
+                .attr('opacity', 0)
+                .attr('class', 'stream-path')
+                .attr('data-seg', seg);
 
             streamPaths[seg] = p;
 
-            // Label at rightmost data point
             var bg = g.append('rect').attr('rx', 3).attr('fill', 'white').attr('fill-opacity', 0.8).attr('opacity', 0);
             var lbl = g.append('text')
-                .attr('font-size', '11px')
-                .attr('font-weight', '700')
-                .attr('fill', col)
-                .attr('opacity', 0)
-                .text(SEG_SHORT[seg] || seg);
-            streamLabelEls[seg]  = lbl;
-            streamLabelBgs[seg]  = bg;
+                .attr('font-size', '11px').attr('font-weight', '700').attr('fill', col)
+                .attr('opacity', 0).text(SEG_SHORT[seg] || seg);
+            streamLabelEls[seg] = lbl;
+            streamLabelBgs[seg] = bg;
         });
 
         function updateStreamLabels(opacity) {
@@ -778,10 +967,10 @@ export default function(component) {
             var lx = xScale(stackInput[lastIdx]._date) + 5;
             segments.forEach(function(seg, si) {
                 var series = streamSeries[si];
-                var band   = series[lastIdx];
-                var cy     = (yScaleStream(band[0]) + yScaleStream(band[1])) / 2;
-                var lbl    = streamLabelEls[seg];
-                var bg     = streamLabelBgs[seg];
+                var band = series[lastIdx];
+                var cy = (yScaleStream(band[0]) + yScaleStream(band[1])) / 2;
+                var lbl = streamLabelEls[seg];
+                var bg  = streamLabelBgs[seg];
                 lbl.attr('x', lx).attr('y', cy).attr('dy', '0.35em').attr('opacity', opacity);
                 try {
                     var bb = lbl.node().getBBox();
@@ -801,11 +990,8 @@ export default function(component) {
         }
 
         // =====================================================================
-        // STEP 4: badge highlight (no new chart elements — uses segment lines)
+        // STEP 4: per-segment lines + badge highlight
         // =====================================================================
-
-        // We still need the per-segment lines for step 3/4 highlight.
-        // Build them using the un-stacked per-segment data.
         var segLinePaths = {};
         var segLineGens  = {};
         var segAnimated  = {};
@@ -885,18 +1071,22 @@ export default function(component) {
             });
         }
 
-        function selectSegment(seg) {
+        // highlight stream paths by selected segment
+        function highlightSelected(seg) {
             selectedSeg = seg;
             parentElement._selectedSeg = seg;
+
+            // Dim/highlight stream paths (if visible — step 3)
             segments.forEach(function(s) {
                 var isSel = s === seg;
-                segLinePaths[s].path
-                    .transition().duration(300).ease(d3.easeQuadOut)
-                    .attr('opacity', isSel ? 1 : 0.2)
-                    .attr('stroke-width', isSel ? 4.5 : 2);
-                segLabelEls[s].transition().duration(300).attr('opacity', isSel ? 1 : 0.1);
-                segLabelBgs[s].transition().duration(300).attr('opacity', isSel ? 0.9 : 0);
+                streamPaths[s]
+                    .transition().duration(300)
+                    .attr('opacity', isSel ? 1 : 0.15)
+                    .attr('stroke', isSel ? '#000' : 'none')
+                    .attr('stroke-width', isSel ? 1 : 0);
             });
+
+            // Update badges
             if (step4BadgesContainer) {
                 step4BadgesContainer.querySelectorAll('.seg-badge').forEach(function(btn) {
                     var bseg = btn.dataset.seg;
@@ -905,75 +1095,91 @@ export default function(component) {
                         btn.classList.add('active');
                         btn.style.background = bcol;
                         btn.style.color = 'white';
-                        btn.style.borderColor = bcol;
+                        btn.style.border = '1px solid ' + bcol;
+                        btn.style.borderLeft = '4px solid ' + bcol;
+                        btn.style.opacity = '1';
                     } else {
                         btn.classList.remove('active');
                         btn.style.background = SEG_TINTS[bseg] || '#eee';
                         btn.style.color = '#0f172a';
-                        btn.style.borderColor = (SEG_COLORS[bseg] || '#888') + '44';
+                        btn.style.border = '1px solid ' + (SEG_COLORS[bseg] || '#888') + '44';
                         btn.style.borderLeft = '4px solid ' + (SEG_COLORS[bseg] || '#888');
+                        btn.style.opacity = '0.6';
                     }
                 });
             }
-            // If step 5 (Sankey) is visible, redraw it for the newly selected segment
+        }
+
+        function selectSegment(seg) {
+            selectedSeg = seg;
+            parentElement._selectedSeg = seg;
+
+            // Highlight segment lines (step 4)
+            segments.forEach(function(s) {
+                var isSel = s === seg;
+                segLinePaths[s].path
+                    .transition().duration(300).ease(d3.easeQuadOut)
+                    .attr('opacity', isSel ? 1 : 0.2)
+                    .attr('stroke-width', isSel ? 4.5 : 2);
+                segLabelEls[s].transition().duration(300).attr('opacity', isSel ? 1 : 0.15);
+                segLabelBgs[s].transition().duration(300).attr('opacity', isSel ? 0.9 : 0);
+            });
+
+            // Redraw Sankey if step 5 is active
             if (currentStep === 5 && window.d3sankey) {
-                chartTitle.textContent = 'How ' + (SEG_SHORT[seg] || seg) + ' turns revenue into profit';
+                chartTitle.textContent = 'How ' + (SEG_SHORT[seg] || seg) + ' turns revenue into profit — FY26';
                 drawSankey();
             }
         }
 
         // =====================================================================
-        // STEP 5: SANKEY P&L DIAGRAM
+        // STEP 5: SANKEY P&L DIAGRAM — enhanced with real divisional metrics
         // =====================================================================
-
-        // Container group for Sankey — positioned at chart area origin
         var sankeyG = g.append('g')
             .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')')
             .attr('opacity', 0);
 
         function computeSankeyData(seg) {
             var key = SEG_KEY[seg] || 'retail';
-
             var totalNii   = Math.max(d3.sum(parsedMonthly, function(d) { return +d['nii_'   + key] || 0; }), 1);
             var totalOther = Math.max(d3.sum(parsedMonthly, function(d) { return +d['other_' + key] || 0; }), 1);
             var totalOpex  = d3.sum(parsedMonthly, function(d) { return +d['opex_'  + key] || 0; });
             var totalLie   = d3.sum(parsedMonthly, function(d) { return +d['lie_'   + key] || 0; });
             var totalRev   = totalNii + totalOther;
-            // Flow conservation: preProvision must equal totalRev - opexLink exactly
             var preProvision = Math.max(totalRev - totalOpex, 0);
             var opexLink = totalRev - preProvision;
-            // Flow conservation: npat must equal preProvision - lieLink exactly
             var npat = Math.max(preProvision - totalLie, 0);
             var lieLink = preProvision - npat;
 
             return {
-                totalNii:     totalNii,
-                totalOther:   totalOther,
-                opexLink:     opexLink,
-                lieLink:      lieLink,
-                totalRev:     totalRev,
-                preProvision: preProvision,
-                npat:         npat,
+                totalNii: totalNii, totalOther: totalOther,
+                opexLink: opexLink, lieLink: lieLink,
+                totalRev: totalRev, preProvision: preProvision, npat: npat,
             };
         }
 
         function formatSankeyValue(v) {
-            return 'A$' + d3.format('.3s')(v).replace('G','B');
+            return 'A$' + d3.format('.3s')(v).replace('G','B').replace('M','M');
         }
 
         function drawSankey() {
             if (!window.d3sankey) return;
             var dsk = window.d3sankey;
-            var iW = innerW();
-            var iH = innerH();
+            var iW  = innerW();
+            var iH  = innerH();
             var seg = selectedSeg;
             var segCol = SEG_COLORS[seg] || '#2a78d6';
             var sd = computeSankeyData(seg);
 
-            // Clear previous content
+            // Real metrics for annotations
+            var divNim = REAL_DIV_NIM[seg];
+            var divCti = REAL_DIV_CTI[seg];
+            var divNpat = REAL_DIV_NPAT[seg];
+            var divNimStr = divNim != null ? 'NIM ' + divNim.toFixed(2) + '%' : '';
+            var divCtiStr = divCti != null ? 'CTI ' + divCti.toFixed(1) + '%' : '';
+
             sankeyG.selectAll('*').remove();
 
-            // Node definitions
             var nodeData = [
                 { name: 'Net Interest Income' },   // 0
                 { name: 'Fee & Other Income' },    // 1
@@ -984,7 +1190,6 @@ export default function(component) {
                 { name: 'Cash NPAT' },              // 6
             ];
 
-            // Link definitions (flow conservation: in-flow === out-flow at every node)
             var linkData = [
                 { source: 0, target: 2, value: sd.totalNii },
                 { source: 1, target: 2, value: sd.totalOther },
@@ -1001,29 +1206,28 @@ export default function(component) {
 
             var graph;
             try {
-                graph = sankeyLayout({ nodes: nodeData.map(function(d) { return Object.assign({}, d); }),
-                                       links: linkData.map(function(d) { return Object.assign({}, d); }) });
+                graph = sankeyLayout({
+                    nodes: nodeData.map(function(d) { return Object.assign({}, d); }),
+                    links: linkData.map(function(d) { return Object.assign({}, d); })
+                });
             } catch(e) { return; }
 
             var nodes = graph.nodes;
             var links = graph.links;
 
-            // Node color function
             function nodeColor(i) {
-                if (i === 0 || i === 1) return '#0d9488'; // teal source nodes
-                if (i === 2) return segCol;               // hub = segment color
-                if (i === 3 || i === 5) return '#dc2626'; // red drains
-                return '#16a34a';                          // green profit nodes
+                if (i === 0 || i === 1) return '#0d9488';
+                if (i === 2) return segCol;
+                if (i === 3 || i === 5) return '#dc2626';
+                return '#16a34a';
             }
 
-            // Link color function
             function linkColor(link) {
                 var ti = link.target.index !== undefined ? link.target.index : link.target;
-                if (ti === 3 || ti === 5) return 'rgba(220,38,38,0.35)';
-                return d3.color(segCol) ? d3.color(segCol).copy({opacity: 0.4}).formatRgb() : segCol + '66';
+                if (ti === 3 || ti === 5) return 'rgba(220,38,38,0.32)';
+                return d3.color(segCol) ? d3.color(segCol).copy({opacity: 0.38}).formatRgb() : segCol + '66';
             }
 
-            // Draw links
             var linkPath = dsk.sankeyLinkHorizontal();
 
             var linkEls = sankeyG.append('g').attr('class', 'sankey-links')
@@ -1037,14 +1241,11 @@ export default function(component) {
                 .attr('fill', 'none')
                 .attr('opacity', 0);
 
-            // Animate links in with stagger
-            linkEls.transition()
-                .duration(500)
+            linkEls.transition().duration(500)
                 .delay(function(d, i) { return i * 100; })
                 .ease(d3.easeCubicInOut)
                 .attr('opacity', 1);
 
-            // Draw nodes
             var nodeEls = sankeyG.append('g').attr('class', 'sankey-nodes')
                 .selectAll('rect')
                 .data(nodes)
@@ -1060,7 +1261,6 @@ export default function(component) {
 
             nodeEls.transition().duration(400).attr('opacity', 1);
 
-            // Node labels
             var nodeLabelG = sankeyG.append('g').attr('class', 'sankey-node-labels');
             nodes.forEach(function(d, i) {
                 var isRight = d.x0 > iW / 2;
@@ -1069,8 +1269,7 @@ export default function(component) {
                 var anchor = isRight ? 'start' : 'end';
 
                 nodeLabelG.append('text')
-                    .attr('x', lx)
-                    .attr('y', ly - 5)
+                    .attr('x', lx).attr('y', ly - 8)
                     .attr('text-anchor', anchor)
                     .attr('dominant-baseline', 'middle')
                     .attr('font-size', '10px')
@@ -1081,20 +1280,59 @@ export default function(component) {
                     .transition().delay(600).duration(400).attr('opacity', 1);
 
                 nodeLabelG.append('text')
-                    .attr('x', lx)
-                    .attr('y', ly + 8)
+                    .attr('x', lx).attr('y', ly + 5)
                     .attr('text-anchor', anchor)
                     .attr('dominant-baseline', 'middle')
                     .attr('font-size', '9px')
                     .attr('font-weight', '400')
                     .attr('fill', '#64748b')
                     .attr('opacity', 0)
-                    .text(function() {
-                        var val = d.value || 0;
-                        return formatSankeyValue(val);
-                    })
+                    .text(formatSankeyValue(d.value || 0))
                     .transition().delay(700).duration(400).attr('opacity', 1);
+
+                // Annotate NII node with NIM, NPAT node with NPAT
+                if (i === 0 && divNimStr) {
+                    nodeLabelG.append('text')
+                        .attr('x', lx).attr('y', ly + 17)
+                        .attr('text-anchor', anchor)
+                        .attr('font-size', '8px')
+                        .attr('font-weight', '600')
+                        .attr('fill', '#0d9488')
+                        .attr('opacity', 0)
+                        .text(divNimStr)
+                        .transition().delay(800).duration(400).attr('opacity', 1);
+                }
+                if (i === 6 && divNpat != null) {
+                    var realStr = 'FY26 NPAT: $' + (divNpat / 1000).toFixed(3) + 'B';
+                    nodeLabelG.append('text')
+                        .attr('x', lx).attr('y', ly + 17)
+                        .attr('text-anchor', anchor)
+                        .attr('font-size', '8px')
+                        .attr('font-weight', '600')
+                        .attr('fill', '#16a34a')
+                        .attr('opacity', 0)
+                        .text(realStr)
+                        .transition().delay(800).duration(400).attr('opacity', 1);
+                }
             });
+
+            // CTI annotation on OpEx link area
+            if (divCtiStr) {
+                var opexNode = nodes[3];
+                if (opexNode) {
+                    var ctiX = (opexNode.x0 + opexNode.x1) / 2;
+                    var ctiY = (opexNode.y0 + opexNode.y1) / 2;
+                    sankeyG.append('text')
+                        .attr('x', ctiX).attr('y', ctiY - (opexNode.y1 - opexNode.y0) / 2 - 6)
+                        .attr('text-anchor', 'middle')
+                        .attr('font-size', '8px')
+                        .attr('font-weight', '700')
+                        .attr('fill', '#dc2626')
+                        .attr('opacity', 0)
+                        .text(divCtiStr)
+                        .transition().delay(900).duration(400).attr('opacity', 1);
+                }
+            }
         }
 
         function hideSankey() {
@@ -1106,7 +1344,7 @@ export default function(component) {
         // =====================================================================
         var stockAreaGen = d3.area()
             .x(function(d) { return xScale(d._date); })
-            .y0(function() { return yScaleStock(minStock * 0.92); })
+            .y0(function() { return yScaleStock(minStock * 0.95); })
             .y1(function(d) { return yScaleStock(d.value); })
             .curve(d3.curveMonotoneX);
 
@@ -1117,7 +1355,7 @@ export default function(component) {
 
         var stockAreaPath = g.append('path')
             .datum(parsedStock)
-            .attr('fill', 'rgba(15,76,129,0.12)')
+            .attr('fill', 'rgba(15,76,129,0.11)')
             .attr('d', stockAreaGen)
             .attr('opacity', 0);
 
@@ -1147,11 +1385,8 @@ export default function(component) {
 
         // 20-week moving average
         var movingAvgData = parsedStock.map(function(d, i) {
-            var window20 = parsedStock.slice(Math.max(0, i - 19), i + 1);
-            return {
-                _date: d._date,
-                value: d3.mean(window20, function(x) { return x.value; })
-            };
+            var w20 = parsedStock.slice(Math.max(0, i - 19), i + 1);
+            return { _date: d._date, value: d3.mean(w20, function(x) { return x.value; }) };
         });
 
         var maLineGen = d3.line()
@@ -1168,7 +1403,6 @@ export default function(component) {
             .attr('d', maLineGen)
             .attr('opacity', 0);
 
-        // MA label at last point
         var maLabelEl = null;
         if (movingAvgData.length > 0) {
             var lastMa = movingAvgData[movingAvgData.length - 1];
@@ -1183,8 +1417,9 @@ export default function(component) {
                 .text('20-wk MA');
         }
 
-        // Peak annotation
-        var peakRow = parsedStock.length ? parsedStock.reduce(function(a, b) { return b.value > a.value ? b : a; }) : null;
+        var peakRow = parsedStock.length
+            ? parsedStock.reduce(function(a, b) { return b.value > a.value ? b : a; })
+            : null;
         var peakAnnotG = g.append('g').attr('opacity', 0);
         if (peakRow) {
             var px = xScale(peakRow._date);
@@ -1197,8 +1432,7 @@ export default function(component) {
                 .attr('x', px).attr('y', py - 6)
                 .attr('text-anchor', 'middle')
                 .attr('font-size', '0.6rem').attr('font-weight', '700')
-                .attr('fill', '#0F4C81')
-                .text('FY24 peak');
+                .attr('fill', '#0F4C81').text('FY24 peak');
         }
 
         // =====================================================================
@@ -1208,6 +1442,7 @@ export default function(component) {
             var dur = fast ? 200 : 400;
             totalAreaPath.transition().duration(dur).attr('opacity', 0);
             totalLinePath.transition().duration(dur).attr('opacity', 0);
+            annotG.transition().duration(dur).attr('opacity', 0);
             hideTreemap();
             hideStreamGraph();
             segments.forEach(function(seg) {
@@ -1221,7 +1456,8 @@ export default function(component) {
             maLine.transition().duration(dur).attr('opacity', 0);
             if (maLabelEl) maLabelEl.transition().duration(dur).attr('opacity', 0);
             peakAnnotG.transition().duration(dur).attr('opacity', 0);
-            kpiOverlay.style.opacity = '0';
+            kpiGrid.style.display = 'none';
+            svg.style('opacity', '1');
         }
 
         // =====================================================================
@@ -1234,7 +1470,7 @@ export default function(component) {
 
             var t = d3.transition().duration(400).ease(d3.easeCubicInOut);
 
-            // ----------- Step 0: empty axes -----------
+            // --- Step 0: empty axes ---
             if (idx === 0) {
                 chartTitle.textContent = 'Group Operating Income — FY22 to FY26';
                 chartTitle.style.opacity = '1';
@@ -1244,8 +1480,11 @@ export default function(component) {
                 segments.forEach(function(seg) { segAnimated[seg] = false; });
                 styleYAxis(yScaleIncome, false);
                 drawGridlines(yScaleIncome);
+                xAxisG.transition(t).attr('opacity', 1);
+                yAxisG.transition(t).attr('opacity', 1);
+                gridG.transition(t).attr('opacity', 1);
 
-            // ----------- Step 1: total income area + line (navy) -----------
+            // --- Step 1: total income area + line + annotations ---
             } else if (idx === 1) {
                 chartTitle.textContent = 'Group Operating Income';
                 chartTitle.style.opacity = '1';
@@ -1265,7 +1504,15 @@ export default function(component) {
                 maLine.transition(t).attr('opacity', 0);
                 if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
-                kpiOverlay.style.opacity = '0';
+                kpiGrid.style.display = 'none';
+                svg.style('opacity', '1');
+
+                xAxisG.transition(t).attr('opacity', 1);
+                yAxisG.transition(t).attr('opacity', 1);
+                gridG.transition(t).attr('opacity', 1);
+
+                styleYAxis(yScaleIncome, false);
+                drawGridlines(yScaleIncome);
 
                 totalAreaPath.transition(t).attr('opacity', 1);
                 if (!totalLineAnimated) {
@@ -1273,21 +1520,26 @@ export default function(component) {
                     totalLinePath.attr('opacity', 1)
                         .attr('stroke-dashoffset', totalLineLen)
                         .transition().duration(1100).ease(d3.easeCubicOut)
-                        .attr('stroke-dashoffset', 0);
+                        .attr('stroke-dashoffset', 0)
+                        .on('end', function() {
+                            // Fade in annotations after line draws
+                            annotG.transition().duration(500).attr('opacity', 1);
+                        });
                 } else {
-                    totalLinePath.transition(t).attr('opacity', 1).attr('stroke-dashoffset', 0);
+                    totalLinePath.transition(t).attr('opacity', 1).attr('stroke-dashoffset', 0)
+                        .on('end', function() {
+                            annotG.transition().duration(400).attr('opacity', 1);
+                        });
                 }
 
-                styleYAxis(yScaleIncome, false);
-                drawGridlines(yScaleIncome);
-
-            // ----------- Step 2: animated treemap -----------
+            // --- Step 2: animated treemap ---
             } else if (idx === 2) {
                 chartTitle.textContent = 'Group Operating Income — proportional split';
                 chartTitle.style.opacity = '1';
 
                 totalAreaPath.transition().duration(300).attr('opacity', 0);
                 totalLinePath.transition().duration(300).attr('opacity', 0);
+                annotG.transition().duration(300).attr('opacity', 0);
                 hideStreamGraph();
                 segments.forEach(function(seg) {
                     segLinePaths[seg].path.transition().duration(300).attr('opacity', 0);
@@ -1300,20 +1552,17 @@ export default function(component) {
                 maLine.transition(t).attr('opacity', 0);
                 if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
-                kpiOverlay.style.opacity = '0';
+                kpiGrid.style.display = 'none';
+                svg.style('opacity', '1');
 
-                // Hide axes for treemap
                 xAxisG.transition(t).attr('opacity', 0);
                 yAxisG.transition(t).attr('opacity', 0);
                 gridG.transition(t).attr('opacity', 0);
 
-                // Build and show treemap — set group visible immediately so rects
-                // animate themselves; avoids ghost rects from deferred callback racing
                 treemapG.attr('opacity', 1);
-                // Skip rebuild if treemap was already built at the current dimensions
                 if (!treemapBuilt) { buildTreemap(); }
 
-            // ----------- Step 3: stream graph -----------
+            // --- Step 3: stream graph ---
             } else if (idx === 3) {
                 chartTitle.textContent = 'Revenue streams — five-year flow';
                 chartTitle.style.opacity = '1';
@@ -1321,6 +1570,7 @@ export default function(component) {
                 hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                annotG.transition(t).attr('opacity', 0);
                 segments.forEach(function(seg) {
                     segLinePaths[seg].path.transition(t).attr('opacity', 0);
                     segLabelEls[seg].transition(t).attr('opacity', 0);
@@ -1332,22 +1582,26 @@ export default function(component) {
                 maLine.transition(t).attr('opacity', 0);
                 if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
-                kpiOverlay.style.opacity = '0';
+                kpiGrid.style.display = 'none';
+                svg.style('opacity', '1');
 
-                // Restore axes for stream graph
                 xAxisG.transition(t).attr('opacity', 1);
-                yAxisG.transition(t).attr('opacity', 0); // stream graph hides Y axis (silhouette)
-                gridG.transition(t).attr('opacity', 0);  // no gridlines for stream
+                yAxisG.transition(t).attr('opacity', 0);
+                gridG.transition(t).attr('opacity', 0);
 
-                // Animate stream bands in with stagger
+                // Keep _lastYScale current for resize/gridline accuracy even though axis is hidden
+                styleYAxis(yScaleStream, false);
+                // Hide axis labels after scale update (stream graph shows no Y axis)
+                yAxisG.transition().duration(0).attr('opacity', 0);
+
                 segments.forEach(function(seg, si) {
                     streamPaths[seg]
                         .transition().delay(si * 80).duration(700).ease(d3.easeCubicInOut)
-                        .attr('opacity', 0.85);
+                        .attr('opacity', 0.82);
                 });
                 setTimeout(function() { if (currentStep === 3) { updateStreamLabels(1); } }, 900);
 
-            // ----------- Step 4: interactive badge selection -----------
+            // --- Step 4: interactive badge selection ---
             } else if (idx === 4) {
                 chartTitle.textContent = 'Segment Operating Income';
                 chartTitle.style.opacity = '1';
@@ -1355,6 +1609,7 @@ export default function(component) {
                 hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                annotG.transition(t).attr('opacity', 0);
                 hideStreamGraph();
                 hideSankey();
                 stockAreaPath.transition(t).attr('opacity', 0);
@@ -1362,12 +1617,14 @@ export default function(component) {
                 maLine.transition(t).attr('opacity', 0);
                 if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
-                kpiOverlay.style.opacity = '0';
+                kpiGrid.style.display = 'none';
+                svg.style('opacity', '1');
 
-                // Restore axes
                 xAxisG.transition(t).attr('opacity', 1);
                 yAxisG.transition(t).attr('opacity', 1);
                 gridG.transition(t).attr('opacity', 1);
+                styleYAxis(yScaleSegs, false);
+                drawGridlines(yScaleSegs);
 
                 var resetT = d3.transition().duration(400).ease(d3.easeCubicInOut);
                 segments.forEach(function(seg) {
@@ -1379,24 +1636,26 @@ export default function(component) {
                 });
                 updateSegmentLabels(1, yScaleSegs);
 
-                // Delay selectSegment until after resetT (400ms) so dashoffset
-                // animation completes before selectSegment interrupts with its own transition.
+                // Apply badge highlight state synchronously to avoid flash
+                highlightSelected(selectedSeg);
+
+                // Animate the chart lines after a short delay
                 setTimeout(function() {
-                    if (currentStep === 4) { selectSegment(selectedSeg); }
+                    if (currentStep === 4) {
+                        selectSegment(selectedSeg);
+                    }
                 }, 450);
 
-                styleYAxis(yScaleSegs, false);
-                drawGridlines(yScaleSegs);
-
-            // ----------- Step 5: Sankey P&L diagram -----------
+            // --- Step 5: Sankey P&L diagram ---
             } else if (idx === 5) {
                 var seg = selectedSeg;
-                chartTitle.textContent = 'How ' + (SEG_SHORT[seg] || seg) + ' turns revenue into profit';
+                chartTitle.textContent = 'How ' + (SEG_SHORT[seg] || seg) + ' turns revenue into profit — FY26';
                 chartTitle.style.opacity = '1';
 
                 hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                annotG.transition(t).attr('opacity', 0);
                 hideStreamGraph();
                 segments.forEach(function(s) {
                     segLinePaths[s].path.transition(t).attr('opacity', 0);
@@ -1408,22 +1667,20 @@ export default function(component) {
                 maLine.transition(t).attr('opacity', 0);
                 if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
                 peakAnnotG.transition(t).attr('opacity', 0);
-                kpiOverlay.style.opacity = '0';
+                kpiGrid.style.display = 'none';
+                svg.style('opacity', '1');
 
-                // Hide regular axes — Sankey uses its own layout
                 xAxisG.transition(t).attr('opacity', 0);
                 yAxisG.transition(t).attr('opacity', 0);
                 gridG.transition(t).attr('opacity', 0);
 
-                // Reset sankeyG and redraw (selectedSeg may have changed)
-                // Clear stale DOM nodes synchronously before the fade-in to avoid ghost flash
                 hideSankey();
                 sankeyG.selectAll('*').remove();
                 sankeyG.attr('opacity', 0);
 
                 function doDrawSankey() {
-                    sankeyG.transition().duration(300).attr('opacity', 1)
-                        .on('end', function() { drawSankey(); });
+                    drawSankey();
+                    sankeyG.transition().duration(300).attr('opacity', 1);
                 }
 
                 if (window.d3sankey) {
@@ -1434,7 +1691,7 @@ export default function(component) {
                     });
                 }
 
-            // ----------- Step 6: share price + moving average -----------
+            // --- Step 6: share price + moving average ---
             } else if (idx === 6) {
                 chartTitle.textContent = 'Share Price (A$)';
                 chartTitle.style.opacity = '1';
@@ -1442,6 +1699,7 @@ export default function(component) {
                 hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                annotG.transition(t).attr('opacity', 0);
                 hideStreamGraph();
                 segments.forEach(function(seg) {
                     segLinePaths[seg].path.transition(t).attr('opacity', 0);
@@ -1449,12 +1707,14 @@ export default function(component) {
                     segLabelBgs[seg].transition(t).attr('opacity', 0);
                 });
                 hideSankey();
-                kpiOverlay.style.opacity = '0';
+                kpiGrid.style.display = 'none';
+                svg.style('opacity', '1');
 
-                // Restore axes
                 xAxisG.transition(t).attr('opacity', 1);
                 yAxisG.transition(t).attr('opacity', 1);
                 gridG.transition(t).attr('opacity', 1);
+                styleYAxis(yScaleStock, true);
+                drawGridlines(yScaleStock);
 
                 stockAreaPath.transition(t).attr('opacity', 1);
                 if (!stockAnimated) {
@@ -1465,15 +1725,8 @@ export default function(component) {
                         .transition().duration(1100).ease(d3.easeCubicOut)
                         .attr('stroke-dashoffset', 0);
                     peakAnnotG.transition().delay(1000).duration(400).attr('opacity', 1);
-                    // Fade in MA line 700ms after main line appears
-                    maLine
-                        .transition().delay(700).duration(600).ease(d3.easeCubicOut)
-                        .attr('opacity', 0.9);
-                    if (maLabelEl) {
-                        maLabelEl
-                            .transition().delay(1200).duration(400)
-                            .attr('opacity', 1);
-                    }
+                    maLine.transition().delay(700).duration(600).ease(d3.easeCubicOut).attr('opacity', 0.9);
+                    if (maLabelEl) maLabelEl.transition().delay(1200).duration(400).attr('opacity', 1);
                 } else {
                     stockLinePath.transition(t).attr('opacity', 1).attr('stroke-dashoffset', 0);
                     peakAnnotG.transition(t).attr('opacity', 1);
@@ -1481,14 +1734,16 @@ export default function(component) {
                     if (maLabelEl) maLabelEl.transition(t).attr('opacity', 1);
                 }
 
-                styleYAxis(yScaleStock, true);
-                drawGridlines(yScaleStock);
-
-            // ----------- Step 7: KPI scorecard -----------
+            // --- Step 7: CFO KPI dashboard ---
             } else if (idx === 7) {
+                chartTitle.textContent = 'CBA FY26 — Key Performance Indicators';
+                chartTitle.style.opacity = '1';
+
+                // Hide all SVG content
                 hideTreemap();
                 totalAreaPath.transition(t).attr('opacity', 0);
                 totalLinePath.transition(t).attr('opacity', 0);
+                annotG.transition(t).attr('opacity', 0);
                 hideStreamGraph();
                 segments.forEach(function(seg) {
                     segLinePaths[seg].path.transition(t).attr('opacity', 0);
@@ -1496,38 +1751,30 @@ export default function(component) {
                     segLabelBgs[seg].transition(t).attr('opacity', 0);
                 });
                 hideSankey();
-
-                // Restore axes (stock backdrop)
-                xAxisG.transition(t).attr('opacity', 0.3);
-                yAxisG.transition(t).attr('opacity', 0.3);
-                gridG.transition(t).attr('opacity', 0.3);
-
-                chartTitle.style.opacity = '0.3';
-                stockAreaPath.transition(t).attr('opacity', 0.12);
-                stockLinePath.transition(t).attr('opacity', 0.12);
+                stockAreaPath.transition(t).attr('opacity', 0);
+                stockLinePath.transition(t).attr('opacity', 0);
                 maLine.transition(t).attr('opacity', 0);
                 if (maLabelEl) maLabelEl.transition(t).attr('opacity', 0);
-                peakAnnotG.transition(t).attr('opacity', 0.15);
-                kpiOverlay.style.opacity = '1';
+                peakAnnotG.transition(t).attr('opacity', 0);
+                xAxisG.transition(t).attr('opacity', 0);
+                yAxisG.transition(t).attr('opacity', 0);
+                gridG.transition(t).attr('opacity', 0);
 
-                kpiValEls.forEach(function(item, ci) {
-                    var target = kpis[item.spec.key];
-                    if (target == null) {
-                        item.el.textContent = '—';
-                        return;
-                    }
-                    d3.select(item.el)
-                        .transition().duration(800).delay(ci * 100)
-                        .tween('text', function() {
-                            var node = this;
-                            var interp = d3.interpolateNumber(0, target);
-                            var prefix = item.spec.prefix;
-                            var suffix = item.spec.suffix;
-                            var dec    = item.spec.decimals;
-                            return function(tt) {
-                                node.textContent = prefix + interp(tt).toFixed(dec) + suffix;
-                            };
-                        });
+                // Show KPI grid, hide SVG
+                svg.style('opacity', '0');
+                kpiGrid.style.display = 'grid';
+
+                // Staggered tile pop-in animation
+                kpiTileEls.forEach(function(item, ci) {
+                    var tile = item.tile;
+                    tile.style.transform = 'translateY(12px)';
+                    tile.style.opacity = '0';
+                    tile.style.transition = 'none';
+                    setTimeout(function() {
+                        tile.style.transition = 'transform 0.4s ease, opacity 0.4s ease';
+                        tile.style.transform = 'translateY(0)';
+                        tile.style.opacity = '1';
+                    }, ci * 70);
                 });
             }
         }
@@ -1562,7 +1809,7 @@ export default function(component) {
                     });
                 }
             },
-            { root: inner, threshold: 0.3 }
+            { root: scrollContainer, threshold: 0.3 }
         );
 
         stepEls.forEach(function(el, i) {
@@ -1583,7 +1830,6 @@ export default function(component) {
                 xAxisG.selectAll('line').attr('stroke', '#e2e8f0');
                 if (_lastYScale) drawGridlines(_lastYScale);
 
-                // Redraw static paths
                 totalAreaPath.attr('d', totalAreaGen);
                 totalLinePath.attr('d', totalLineGen);
                 segments.forEach(function(seg) {
@@ -1594,23 +1840,17 @@ export default function(component) {
                 stockLinePath.attr('d', stockLineGen);
                 maLine.attr('d', maLineGen);
                 if (maLabelEl && movingAvgData.length > 0) {
-                    var lastMa = movingAvgData[movingAvgData.length - 1];
-                    maLabelEl.attr('x', xScale(lastMa._date) + 6).attr('y', yScaleStock(lastMa.value));
+                    var lMa = movingAvgData[movingAvgData.length - 1];
+                    maLabelEl.attr('x', xScale(lMa._date) + 6).attr('y', yScaleStock(lMa.value));
                 }
-
-                // Reposition peak annotation after xScale change
                 if (peakRow) {
-                    var px = xScale(peakRow._date);
-                    var py = yScaleStock(peakRow.value);
-                    peakAnnotG.select('line').attr('x1', px).attr('x2', px).attr('y1', py).attr('y2', py + 30);
-                    peakAnnotG.select('text').attr('x', px).attr('y', py - 6);
+                    var rpx = xScale(peakRow._date);
+                    var rpy = yScaleStock(peakRow.value);
+                    peakAnnotG.select('line').attr('x1', rpx).attr('x2', rpx).attr('y1', rpy).attr('y2', rpy + 30);
+                    peakAnnotG.select('text').attr('x', rpx).attr('y', rpy - 6);
                 }
-
-                // Reposition segment and stream labels after xScale change
                 if (currentStep === 3) { updateStreamLabels(1); }
                 if (currentStep === 4) { updateSegmentLabels(1, yScaleSegs); }
-
-                // Rebuild layout-dependent charts if active
                 if (currentStep === 2) { treemapBuilt = false; buildTreemap(); }
                 if (currentStep === 5 && window.d3sankey) { drawSankey(); }
             });
@@ -1663,7 +1903,8 @@ def st_scrollytelling(
     key:
         Unique Streamlit component key.
     height:
-        Pixel height reserved by Streamlit. Defaults to 900px.
+        Pixel height reserved by Streamlit. Uses window.innerHeight for layout.
+        Defaults to 900px.
     """
     _scrollytelling_component(
         data=data,

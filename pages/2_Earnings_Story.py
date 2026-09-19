@@ -37,19 +37,46 @@ st.markdown(
 )
 
 # ---------------------------------------------------------------- constants --
+REAL_KPIS = {
+    "cash_npat_m": 10982,
+    "npat_growth_pct": 7,
+    "nim_pct": 2.05,
+    "nim_change_bps": -3,
+    "cti_pct": 45.5,
+    "cti_change_bps": -20,
+    "roe_pct": 14.0,
+    "roe_change_bps": 50,
+    "cet1_pct": 12.0,
+    "cet1_change_bps": -30,
+    "eps_cents": 656.9,
+    "dps_cents": 505,
+    "lie_m": 788,
+    "lie_rate_bps": 8,
+    "pre_provision_m": 16469,
+    "operating_income_m": 30224,
+    "div_npat": {"Retail Banking Services": 5587, "Business Banking": 4544,
+                 "Institutional Banking and Markets": 1258, "New Zealand (ASB)": 1112},
+    "div_nim": {"Retail Banking Services": 2.50, "Business Banking": 3.39,
+                "Institutional Banking and Markets": 0.87, "New Zealand (ASB)": 2.30},
+    "div_cti": {"Retail Banking Services": 39.3, "Business Banking": 32.2,
+                "Institutional Banking and Markets": 40.6, "New Zealand (ASB)": 46.4},
+    "div_lie": {"Retail Banking Services": 378, "Business Banking": 310,
+                "Institutional Banking and Markets": 33, "New Zealand (ASB)": 66},
+}
+
 SEGMENTS = [
     "Retail Banking Services",
     "Business Banking",
-    "Institutional Banking & Markets",
+    "Institutional Banking and Markets",
     "New Zealand (ASB)",
 ]
 
 # Mapping from segment name to short key used in nii_*/other_*/opex_*/lie_* columns.
 _SEGMENT_SHORT_KEYS: dict[str, str] = {
-    "Retail Banking Services":         "retail",
-    "Business Banking":                "business",
-    "Institutional Banking & Markets": "ibm",
-    "New Zealand (ASB)":               "nz",
+    "Retail Banking Services":          "retail",
+    "Business Banking":                 "business",
+    "Institutional Banking and Markets": "ibm",
+    "New Zealand (ASB)":                "nz",
 }
 
 
@@ -232,22 +259,21 @@ def _build_kpis(seed: int = 42) -> dict:
 
 
 # -------------------------------------------------------------------- page --
-st.markdown("## The Five-Year Earnings Story")
+st.markdown("## CBA FY26 Earnings Story")
 st.markdown(
-    # Fix 19: replace 'demo purposes' with editorial copy that matches the
-    # immersive tone; move the synthetic-data caveat to a smaller caption below.
-    "Scroll through the sections below to follow a five-year narrative of "
-    "synthetic bank earnings — income, credit stress, and the market's verdict."
+    "Five years of Commonwealth Bank earnings — income growth, divisional performance, "
+    "and the market's verdict. Scroll to explore."
 )
 
 chart_data = {
-    "monthly":  _build_monthly_records(),
-    "stock":    _build_stock_records(),
-    "kpis":     _build_kpis(),
-    "segments": SEGMENTS,
+    "monthly":    _build_monthly_records(),
+    "stock":      _build_stock_records(),
+    "kpis":       _build_kpis(),
+    "real_kpis":  REAL_KPIS,
+    "segments":   SEGMENTS,
 }
 
-# Fix 12: pass an explicit height so Streamlit reserves space before JS runs.
-st_scrollytelling(chart_data, key="story", height=900)
+# JS uses window.innerHeight for actual sizing; this large value avoids clipping.
+st_scrollytelling(chart_data, key="story", height=5000)
 
-st.caption("All figures are synthetically generated for illustrative purposes only.")
+st.caption("Illustrative scenario data grounded in CBA FY26 Profit Announcement (12 August 2026). All chart data is synthetic.")
