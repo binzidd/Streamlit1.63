@@ -29,10 +29,30 @@ st.set_page_config(
     page_title="Earnings Story — Pulse",
     page_icon="📜",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown(
-    '<style>.block-container{padding-top:0.5rem;max-width:1500px;}</style>',
+    """<style>
+    /* hide sidebar and toggle */
+    [data-testid="stSidebar"],
+    [data-testid="collapsedControl"],
+    [data-testid="stSidebarNav"],
+    button[aria-label="Close sidebar"],
+    .stSidebarCollapsedControl { display:none !important; }
+    /* hide Streamlit top header bar */
+    [data-testid="stHeader"],
+    [data-testid="stToolbar"],
+    #MainMenu, header { display:none !important; }
+    /* full-bleed page */
+    .stApp { background:#f8fafc; }
+    .block-container {
+        padding:0 !important;
+        margin:0 !important;
+        max-width:100% !important;
+    }
+    /* hide title and description — component has its own */
+    </style>""",
     unsafe_allow_html=True,
 )
 
@@ -259,12 +279,6 @@ def _build_kpis(seed: int = 42) -> dict:
 
 
 # -------------------------------------------------------------------- page --
-st.markdown("## CBA FY26 Earnings Story")
-st.markdown(
-    "Five years of Commonwealth Bank earnings — income growth, divisional performance, "
-    "and the market's verdict. Scroll to explore."
-)
-
 chart_data = {
     "monthly":    _build_monthly_records(),
     "stock":      _build_stock_records(),
