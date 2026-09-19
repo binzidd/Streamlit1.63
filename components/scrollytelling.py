@@ -1,4 +1,4 @@
-"""Scrollytelling earnings story — Streamlit V2 component. CFO-grade, grounded in CBA FY26 data. v11"""
+"""Scrollytelling earnings story — Streamlit V2 component. CFO-grade, grounded in CBA FY26 data. v12"""
 from __future__ import annotations
 import streamlit as st
 
@@ -11,7 +11,7 @@ _HTML = '<div id="st_scroll_root" style="width:100%;"></div>'
 # JS module (D3 v7) — v10
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* v11 */
+/* v12 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -349,6 +349,38 @@ export default function(component) {
         // =====================================================================
         // KPI GRID DOM (chapter 6)
         // =====================================================================
+
+        // 5-year sparkline data (FY22 → FY26)
+        var annual = data.annual || [];
+        var SPARKLINE = {
+            'Cash NPAT':        annual.map(function(y){return y.npat_m;}),
+            'NIM':              annual.map(function(y){return y.nim_pct;}),
+            'CTI':              annual.map(function(y){return y.cti_pct;}),
+            'ROE':              annual.map(function(y){return y.roe_pct;}),
+            'CET1 (APRA)':      annual.map(function(y){return y.cet1_pct;}),
+            'EPS (cash)':       annual.map(function(y){return y.eps_cents;}),
+            'DPS':              annual.map(function(y){return y.dps_cents;}),
+            'LIE rate':         annual.map(function(y){return y.lie_m;}),
+            'Pre-prov. profit': annual.map(function(y){return y.pre_prov_m;}),
+        };
+
+        function makeSparkline(values, accentColor) {
+            var c = document.createElement('canvas');
+            c.width = 90; c.height = 28;
+            c.style.cssText = 'display:block;margin-top:5px;opacity:0.9;';
+            if (!values || !values.length) return c;
+            var ctx = c.getContext('2d');
+            var mn = Math.min.apply(null, values), mx = Math.max.apply(null, values);
+            var rng = mx - mn || 1, n = values.length;
+            var bw = Math.floor((c.width - (n - 1) * 2) / n), bh = c.height - 4;
+            values.forEach(function(v, i) {
+                var h = Math.max(3, Math.round(((v - mn) / rng) * bh));
+                ctx.fillStyle = i === n - 1 ? (accentColor || '#1e3a5f') : '#cbd5e1';
+                ctx.fillRect(i * (bw + 2), c.height - h - 2, bw, h);
+            });
+            return c;
+        }
+
         kpiGrid = document.createElement('div');
         kpiGrid.style.cssText = 'position:absolute;top:48px;left:0;right:0;bottom:0;display:none;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr 1fr;gap:14px;padding:32px 60px 60px 60px;box-sizing:border-box;background:#f8fafc;z-index:9;align-content:center;';
         parentElement.appendChild(kpiGrid);
@@ -385,6 +417,12 @@ export default function(component) {
             tile.appendChild(lbl);
             tile.appendChild(valRow);
             tile.appendChild(subEl);
+
+            var sparkVals = SPARKLINE[spec.label];
+            if (sparkVals && sparkVals.length) {
+                tile.appendChild(makeSparkline(sparkVals, spec.good ? '#1e3a5f' : '#dc2626'));
+            }
+
             kpiGrid.appendChild(tile);
             kpiTileEls.push({ tile: tile, valEl: valEl, spec: spec });
         });
@@ -621,10 +659,29 @@ export default function(component) {
         // ---- Annotation group (fades in AFTER line draw)
         annotG = g.append('g').attr('opacity', 0).attr('class', 'annot-group');
 
+        // COVID era shading region
+        var covidStart = parseDate('2020-01-01'), covidEnd = parseDate('2022-05-01');
+        if (covidStart && covidEnd) {
+            var cx0 = xScale(covidStart), cx1 = xScale(covidEnd);
+            annotG.append('rect')
+                .attr('x', cx0).attr('y', margin.top)
+                .attr('width', Math.max(0, cx1 - cx0))
+                .attr('height', viewH - margin.top - margin.bottom)
+                .attr('fill', 'rgba(59,130,246,0.07)')
+                .attr('pointer-events', 'none');
+            annotG.append('text')
+                .attr('x', cx0 + 4).attr('y', margin.top + 26)
+                .attr('font-size', '8px').attr('font-weight', '600')
+                .attr('fill', 'rgba(59,130,246,0.55)')
+                .text('COVID-19 era');
+        }
+
         var ANNOTS = [
-            { date: '2022-05-01', label: 'Rate hiking begins', color: '#1e3a5f' },
-            { date: '2023-11-01', label: 'Peak 4.35%',         color: '#1e3a5f' },
-            { date: '2025-02-01', label: 'RBA ↓ easing',       color: '#16a34a' },
+            { date: '2022-02-24', label: 'Russia-Ukraine war', color: '#f59e0b', sw: 1.2 },
+            { date: '2022-05-01', label: 'Rate hiking begins',  color: '#1e3a5f', sw: 1 },
+            { date: '2023-03-10', label: 'SVB collapse',        color: '#7c3aed', sw: 1.2 },
+            { date: '2023-11-01', label: 'Peak 4.35%',          color: '#ef4444', sw: 1 },
+            { date: '2025-02-01', label: 'RBA ↓ easing',        color: '#16a34a', sw: 1 },
         ];
         ANNOTS.forEach(function(ann) {
             var ad = parseDate(ann.date);
@@ -636,7 +693,7 @@ export default function(component) {
                 .attr('x1', ax).attr('x2', ax)
                 .attr('y1', top).attr('y2', bot)
                 .attr('stroke', ann.color)
-                .attr('stroke-width', 1)
+                .attr('stroke-width', ann.sw || 1)
                 .attr('stroke-dasharray', '4 4');
             annotG.append('text')
                 .attr('x', ax + 3).attr('y', top + 14)

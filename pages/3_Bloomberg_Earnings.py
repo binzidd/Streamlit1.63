@@ -24,6 +24,7 @@ from data.generate import (
     generate_dataset,
     generate_stock_data,
 )
+from data.cba_real import EVENTS, get_annual_list
 
 st.set_page_config(
     page_title="Bloomberg Earnings -- CBA FY26",
@@ -276,6 +277,8 @@ chart_data = {
     "real_kpis":  REAL_KPIS,
     "segments":   SEGMENTS,
     "commentary": _load_commentary(),
+    "annual":     get_annual_list(),
+    "events":     EVENTS,
 }
 
 # 8 chapters x ~100vh each + generous buffer for Streamlit iframe

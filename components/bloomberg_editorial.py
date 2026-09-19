@@ -12,10 +12,10 @@ import streamlit as st
 _HTML = '<div id="blm_root" style="width:100%;"></div>'
 
 # ---------------------------------------------------------------------------
-# JS module — blm_v1
+# JS module — blm_v4
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* blm_v1 */
+/* blm_v4 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -438,19 +438,35 @@ export default function(component) {
         });
         var totalAnimated = false;
 
-        // RBA annotations
+        // Event annotations (COVID region + major macro events + RBA)
         var annotG = g.append('g').attr('opacity', 0);
+
+        // COVID era shading
+        var covidS = parseDate('2020-01-01'), covidE = parseDate('2022-05-01');
+        if (covidS && covidE) {
+            annotG.append('rect')
+                .attr('x', xScale(covidS)).attr('y', margin.top)
+                .attr('width', Math.max(0, xScale(covidE) - xScale(covidS)))
+                .attr('height', cH - margin.top - margin.bottom)
+                .attr('fill', 'rgba(96,165,250,0.08)').attr('pointer-events', 'none');
+            annotG.append('text').attr('x', xScale(covidS) + 4).attr('y', margin.top + 26)
+                .attr('font-size', '8px').attr('font-weight', '600')
+                .attr('fill', 'rgba(96,165,250,0.55)').text('COVID-19 era');
+        }
+
         var ANNOTS = [
-            { date: '2022-05-01', label: 'Rate hiking begins', color: '#60a5fa' },
-            { date: '2023-11-01', label: 'Peak 4.35%',         color: '#60a5fa' },
-            { date: '2025-02-01', label: 'RBA ↓ easing',  color: '#34d399' },
+            { date: '2022-02-24', label: 'Russia-Ukraine war', color: '#fbbf24', sw: 1.2 },
+            { date: '2022-05-01', label: 'Rate hiking begins',  color: '#60a5fa', sw: 1 },
+            { date: '2023-03-10', label: 'SVB collapse',        color: '#a78bfa', sw: 1.2 },
+            { date: '2023-11-01', label: 'Peak 4.35%',          color: '#f87171', sw: 1 },
+            { date: '2025-02-01', label: 'RBA ↓ easing',        color: '#34d399', sw: 1 },
         ];
         ANNOTS.forEach(function(ann) {
             var ad = parseDate(ann.date); if (!ad) return;
             var ax = xScale(ad);
             annotG.append('line').attr('x1', ax).attr('x2', ax)
                 .attr('y1', margin.top).attr('y2', cH - margin.bottom)
-                .attr('stroke', ann.color).attr('stroke-width', 1).attr('stroke-dasharray', '4,4');
+                .attr('stroke', ann.color).attr('stroke-width', ann.sw || 1).attr('stroke-dasharray', '4,4');
             annotG.append('text').attr('x', ax + 3).attr('y', margin.top + 14)
                 .attr('font-size', '9px').attr('font-weight', '600').attr('fill', ann.color)
                 .text(ann.label);
@@ -860,12 +876,44 @@ export default function(component) {
         // ==============================================================
         // CHART 7: KPI GRID (chapter 7 — DOM overlay)
         // ==============================================================
+        var annual = data.annual || [];
+        var BLM_SPARKLINE = {
+            'Cash NPAT':        annual.map(function(y){return y.npat_m;}),
+            'NIM':              annual.map(function(y){return y.nim_pct;}),
+            'CTI':              annual.map(function(y){return y.cti_pct;}),
+            'ROE':              annual.map(function(y){return y.roe_pct;}),
+            'CET1 (APRA)':      annual.map(function(y){return y.cet1_pct;}),
+            'EPS (cash)':       annual.map(function(y){return y.eps_cents;}),
+            'DPS':              annual.map(function(y){return y.dps_cents;}),
+            'LIE rate':         annual.map(function(y){return y.lie_m;}),
+            'Pre-prov. profit': annual.map(function(y){return y.pre_prov_m;}),
+        };
+
+        function makeBlmSparkline(values, good) {
+            var c = document.createElement('canvas');
+            c.width = 90; c.height = 24;
+            c.style.cssText = 'display:block;margin-top:6px;opacity:0.8;';
+            if (!values || !values.length) return c;
+            var ctx = c.getContext('2d');
+            var mn = Math.min.apply(null, values), mx = Math.max.apply(null, values);
+            var rng = mx - mn || 1, n = values.length;
+            var bw = Math.floor((c.width - (n - 1) * 2) / n), bh = c.height - 4;
+            values.forEach(function(v, i) {
+                var h = Math.max(3, Math.round(((v - mn) / rng) * bh));
+                ctx.fillStyle = i === n - 1 ? (good ? '#4ade80' : '#f87171') : 'rgba(255,255,255,0.2)';
+                ctx.fillRect(i * (bw + 2), c.height - h - 2, bw, h);
+            });
+            return c;
+        }
+
         var kpiGridEl = document.createElement('div');
         kpiGridEl.style.cssText = 'position:absolute;inset:0;display:none;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:12px;padding:40px;box-sizing:border-box;background:#1e3a5f;';
         chartCol.appendChild(kpiGridEl);
 
+        var kpiTileRefs = [];
         FY26_KPI_TILES.forEach(function(spec) {
             var tile = document.createElement('div');
+            tile.className = 'blm-kpi-tile';
             tile.style.cssText = 'background:rgba(255,255,255,0.06);backdrop-filter:blur(12px);border-radius:12px;padding:18px 20px;border:1px solid rgba(255,255,255,0.1);display:flex;flex-direction:column;gap:4px;transform:translateY(14px);opacity:0;transition:none;';
             tile.innerHTML = [
                 '<div style="font-size:11px;font-weight:600;letter-spacing:0.07em;color:rgba(255,255,255,0.5);text-transform:uppercase;">' + spec.label + '</div>',
@@ -875,7 +923,12 @@ export default function(component) {
                 '</div>',
                 '<div style="font-size:11px;color:rgba(255,255,255,0.4);">' + spec.sub + '</div>',
             ].join('');
+            var sparkVals = BLM_SPARKLINE[spec.label];
+            if (sparkVals && sparkVals.length) {
+                tile.appendChild(makeBlmSparkline(sparkVals, spec.good));
+            }
             kpiGridEl.appendChild(tile);
+            kpiTileRefs.push(tile);
         });
         var kpiFooter = document.createElement('div');
         kpiFooter.style.cssText = 'grid-column:1/-1;font-size:10px;color:rgba(255,255,255,0.25);text-align:center;align-self:end;';
@@ -884,9 +937,7 @@ export default function(component) {
 
         function showKpiGrid() {
             kpiGridEl.style.display = 'grid';
-            var tiles = Array.prototype.slice.call(kpiGridEl.querySelectorAll('div'));
-            // Only animate the 9 metric tiles (not the footer)
-            tiles.slice(0, FY26_KPI_TILES.length).forEach(function(tile, ci) {
+            kpiTileRefs.forEach(function(tile, ci) {
                 tile.style.transform  = 'translateY(14px)';
                 tile.style.opacity    = '0';
                 tile.style.transition = 'none';
@@ -1022,16 +1073,43 @@ export default function(component) {
         }
 
         // ==============================================================
-        // SCROLL DRIVER — spec pattern:
-        //   rootTop = parentElement.getBoundingClientRect().top + window.scrollY
-        //   scrolled = max(0, scrollY - rootTop)
-        //   chartCol.style.top = min(scrolled, maxOffset) + "px"
-        //   ch = floor(scrolled / viewH)
+        // SCROLL DRIVER — Streamlit wraps content in section.stMain which
+        // has overflow:auto. window.scrollY is always 0. We walk ancestors
+        // to find the real scroll container and read its scrollTop.
         // ==============================================================
         var maxOffset = (NUM_CHAPTERS - 1) * viewH;
+        var _scrollContainer = null;
+
+        function findScrollContainer() {
+            // Streamlit 1.x: main scroll area is section.stMain
+            var stMain = document.querySelector('section.stMain');
+            if (stMain && stMain.scrollHeight > stMain.clientHeight + 20) return stMain;
+            // Fallback: walk DOM ancestors from outer element
+            var node = outer.parentElement;
+            while (node && node !== document.body) {
+                var s = window.getComputedStyle(node);
+                if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && node.scrollHeight > node.clientHeight + 20) {
+                    return node;
+                }
+                node = node.parentElement;
+            }
+            return null;
+        }
+
+        function getScrollTop() {
+            if (_scrollContainer) return _scrollContainer.scrollTop;
+            return window.scrollY || window.pageYOffset || 0;
+        }
 
         function onScroll() {
-            var scrollY  = window.scrollY || window.pageYOffset || 0;
+            // Lazy-init: find scroll container on first scroll if not found at startup
+            if (!_scrollContainer) {
+                _scrollContainer = findScrollContainer();
+                if (_scrollContainer) {
+                    _scrollContainer.addEventListener('scroll', scrollHandler, { passive: true });
+                }
+            }
+            var scrollY  = getScrollTop();
             var rootTop  = outer.getBoundingClientRect().top + scrollY;
             var scrolled = Math.max(0, scrollY - rootTop);
             var offset   = Math.min(scrolled, maxOffset);
@@ -1043,21 +1121,15 @@ export default function(component) {
             activateChapter(ch);
         }
 
-        // Listen on both window scroll and any scrollable ancestor
+        // Attach scroll listener on both stMain and window (belt + suspenders)
         var scrollHandler = function() { onScroll(); };
+        _scrollContainer = findScrollContainer();
+        if (_scrollContainer) {
+            _scrollContainer.addEventListener('scroll', scrollHandler, { passive: true });
+        }
         window.addEventListener('scroll', scrollHandler, { passive: true });
         parentElement._blmScroll = scrollHandler;
-
-        // Also probe scrollable ancestors (Streamlit wraps content in section.stMain)
-        var node = outer.parentElement;
-        while (node && node !== document.body) {
-            var s = window.getComputedStyle(node);
-            if ((s.overflowY === 'auto' || s.overflowY === 'scroll') && node.scrollHeight > node.clientHeight + 20) {
-                node.addEventListener('scroll', scrollHandler, { passive: true });
-                break;
-            }
-            node = node.parentElement;
-        }
+        parentElement._blmScrollTarget = _scrollContainer;
 
         // Resize handler
         var resizeHandler = function() {
