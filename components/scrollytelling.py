@@ -11,7 +11,7 @@ _HTML = '<div id="st_scroll_root" style="width:100%;"></div>'
 # JS module (D3 v7) — v10
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* v13 */
+/* v14 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -410,38 +410,54 @@ export default function(component) {
             return svg;
         }
 
+        // ── KPI PANEL: left 2-col metrics + right editorial commentary ──────
         kpiGrid = document.createElement('div');
-        kpiGrid.style.cssText = 'position:absolute;top:48px;left:0;right:0;bottom:0;display:none;grid-template-columns:1fr 1fr 1fr;grid-template-rows:1fr 1fr 1fr;gap:14px;padding:32px 60px 60px 60px;box-sizing:border-box;background:#f8fafc;z-index:9;align-content:center;';
+        kpiGrid.style.cssText = [
+            'position:absolute;top:48px;left:0;right:0;bottom:0;',
+            'display:none;flex-direction:row;gap:0;',
+            'background:#f8fafc;z-index:9;overflow:hidden;',
+        ].join('');
         parentElement.appendChild(kpiGrid);
         parentElement._kpiGrid = kpiGrid;
+
+        // ── LEFT: 2-column card grid (65% width) ──
+        var kpiLeft = document.createElement('div');
+        kpiLeft.style.cssText = [
+            'width:63%;padding:28px 20px 28px 48px;box-sizing:border-box;',
+            'display:grid;grid-template-columns:1fr 1fr;gap:10px;align-content:center;',
+        ].join('');
+        kpiGrid.appendChild(kpiLeft);
 
         kpiTileEls = [];
         FY26_KPI_TILES.forEach(function(spec) {
             var tile = document.createElement('div');
-            tile.style.cssText = 'background:white;border-radius:12px;padding:18px 20px;border:1px solid #e2e8f0;box-shadow:0 2px 10px rgba(0,0,0,0.06);display:flex;flex-direction:column;gap:4px;';
+            tile.style.cssText = [
+                'background:white;border-radius:10px;padding:14px 16px 12px;',
+                'border:1px solid #e2e8f0;box-shadow:0 1px 6px rgba(0,0,0,0.05);',
+                'display:flex;flex-direction:column;gap:2px;',
+            ].join('');
 
             var lbl = document.createElement('div');
             lbl.textContent = spec.label;
-            lbl.style.cssText = 'font-size:11px;font-weight:600;letter-spacing:0.07em;color:#64748b;text-transform:uppercase;';
+            lbl.style.cssText = 'font-size:10px;font-weight:700;letter-spacing:0.08em;color:#94a3b8;text-transform:uppercase;';
 
             var valRow = document.createElement('div');
-            valRow.style.cssText = 'display:flex;align-items:baseline;gap:8px;';
+            valRow.style.cssText = 'display:flex;align-items:baseline;gap:6px;margin-top:2px;';
 
             var valEl = document.createElement('div');
             valEl.textContent = spec.value;
-            valEl.style.cssText = 'font-size:1.55rem;font-weight:800;color:#0f172a;line-height:1.1;';
+            valEl.style.cssText = 'font-size:1.35rem;font-weight:800;color:#0f172a;line-height:1.1;';
 
             var chgEl = document.createElement('div');
             chgEl.textContent = spec.change;
-            var chgColor = spec.good ? '#16a34a' : '#dc2626';
-            chgEl.style.cssText = 'font-size:0.78rem;font-weight:700;color:' + chgColor + ';';
+            chgEl.style.cssText = 'font-size:0.72rem;font-weight:700;color:' + (spec.good ? '#16a34a' : '#dc2626') + ';';
 
             valRow.appendChild(valEl);
             valRow.appendChild(chgEl);
 
             var subEl = document.createElement('div');
             subEl.textContent = spec.sub;
-            subEl.style.cssText = 'font-size:11px;color:#94a3b8;margin-top:2px;';
+            subEl.style.cssText = 'font-size:10px;color:#cbd5e1;';
 
             tile.appendChild(lbl);
             tile.appendChild(valRow);
@@ -452,14 +468,97 @@ export default function(component) {
                 tile.appendChild(makeSparkline(sparkVals, spec.good ? '#1e3a5f' : '#dc2626'));
             }
 
-            kpiGrid.appendChild(tile);
+            kpiLeft.appendChild(tile);
             kpiTileEls.push({ tile: tile, valEl: valEl, spec: spec });
         });
 
         var kpiFooter = document.createElement('div');
-        kpiFooter.style.cssText = 'grid-column:1 / -1;font-size:10px;color:#94a3b8;text-align:center;align-self:end;';
-        kpiFooter.textContent = 'Source: CBA Profit Announcement, year ended 30 June 2026. Chart data is illustrative.';
-        kpiGrid.appendChild(kpiFooter);
+        kpiFooter.style.cssText = 'grid-column:1/-1;font-size:9px;color:#cbd5e1;padding-top:4px;';
+        kpiFooter.textContent = 'Source: CBA Profit Announcement, year ended 30 June 2026.';
+        kpiLeft.appendChild(kpiFooter);
+
+        // ── RIGHT: editorial commentary panel (37% width) ──
+        var kpiRight = document.createElement('div');
+        kpiRight.style.cssText = [
+            'width:37%;padding:36px 40px 36px 28px;box-sizing:border-box;',
+            'display:flex;flex-direction:column;justify-content:center;gap:24px;',
+            'border-left:1px solid #e2e8f0;',
+        ].join('');
+        kpiGrid.appendChild(kpiRight);
+
+        var KPI_INSIGHTS = [
+            {
+                eyebrow: 'PRIMARY PROFIT DRIVER',
+                icon: '▲',
+                iconColor: '#1e3a5f',
+                stat: 'NII $25.6B',
+                statColor: '#1e3a5f',
+                body: 'Net interest income at 84.7% of revenue — highest among Australian majors. The rate cycle matured with 425bps of RBA hikes flowing through loan books, lifting NII 7% despite deposit repricing eating into spreads.',
+            },
+            {
+                eyebrow: 'NET INTEREST MARGIN',
+                icon: '▼',
+                iconColor: '#dc2626',
+                stat: '2.05% — down 3bps',
+                statColor: '#dc2626',
+                body: 'Deposit competition intensified as cash rates plateaued at 4.35%. CBA\'s NIM peaked at 2.10% in FY23 and has compressed 5bps since as term deposits repriced upward. Easing cycle beginning Feb 2025 expected to relieve pressure in FY27.',
+            },
+            {
+                eyebrow: 'BIGGEST EARNER',
+                icon: '★',
+                iconColor: '#f59e0b',
+                stat: 'Business Banking +11%',
+                statColor: '#1e3a5f',
+                body: '$4.54B NPAT — standout performer. Disciplined volume growth in SME lending with a 3.39% NIM vs the group\'s 2.05% average. CTI of 32.2% is the leanest division, outperforming Retail (39.3%) and IB&M (40.6%).',
+            },
+            {
+                eyebrow: 'CREDIT QUALITY & CAPITAL',
+                icon: '◆',
+                iconColor: '#16a34a',
+                stat: 'LIE 8bps · CET1 12.0%',
+                statColor: '#16a34a',
+                body: 'Loan impairment expense at 8bps of gross loans — near decade lows despite a slowing macro. CET1 of 12.0% (APRA) sits 75bps above the regulator\'s 11.25% "unquestionably strong" threshold. Payout ratio: 76.9% fully franked.',
+            },
+        ];
+
+        KPI_INSIGHTS.forEach(function(ins) {
+            var block = document.createElement('div');
+            block.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+
+            var ey = document.createElement('div');
+            ey.style.cssText = 'font-size:9px;font-weight:700;letter-spacing:0.12em;color:#94a3b8;text-transform:uppercase;';
+            ey.textContent = ins.eyebrow;
+
+            var statRow = document.createElement('div');
+            statRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
+
+            var icon = document.createElement('span');
+            icon.textContent = ins.icon;
+            icon.style.cssText = 'font-size:12px;color:' + ins.iconColor + ';';
+
+            var statEl = document.createElement('span');
+            statEl.textContent = ins.stat;
+            statEl.style.cssText = 'font-size:0.95rem;font-weight:800;color:' + ins.statColor + ';';
+
+            statRow.appendChild(icon);
+            statRow.appendChild(statEl);
+
+            var bodyEl = document.createElement('div');
+            bodyEl.textContent = ins.body;
+            bodyEl.style.cssText = 'font-size:11.5px;line-height:1.6;color:#475569;';
+
+            block.appendChild(ey);
+            block.appendChild(statRow);
+            block.appendChild(bodyEl);
+            kpiRight.appendChild(block);
+
+            // Thin divider between blocks (not after last)
+            if (ins !== KPI_INSIGHTS[KPI_INSIGHTS.length - 1]) {
+                var hr = document.createElement('div');
+                hr.style.cssText = 'height:1px;background:#f1f5f9;';
+                kpiRight.appendChild(hr);
+            }
+        });
 
         // =====================================================================
         // CHAPTER STATE MACHINE
@@ -1444,21 +1543,21 @@ export default function(component) {
                 yAxisG.interrupt().transition(t).attr('opacity', 0);
                 gridG.interrupt().transition(t).attr('opacity', 0);
 
-                // Hide SVG, show KPI grid
+                // Hide SVG, show KPI panel (left cards + right commentary)
                 svg.interrupt().style('opacity', '0');
-                kpiGrid.style.display = 'grid';
+                kpiGrid.style.display = 'flex';
 
-                // Staggered tile pop-in with count-up tweens
+                // Staggered tile pop-in
                 kpiTileEls.forEach(function(item, ci) {
                     var tile = item.tile;
-                    tile.style.transform  = 'translateY(14px)';
+                    tile.style.transform  = 'translateY(12px)';
                     tile.style.opacity    = '0';
                     tile.style.transition = 'none';
                     setTimeout(function() {
-                        tile.style.transition = 'transform 0.45s cubic-bezier(0.34,1.2,0.64,1), opacity 0.4s ease';
+                        tile.style.transition = 'transform 0.42s cubic-bezier(0.34,1.2,0.64,1), opacity 0.38s ease';
                         tile.style.transform  = 'translateY(0)';
                         tile.style.opacity    = '1';
-                    }, ci * 70);
+                    }, ci * 55);
                 });
             }
         }

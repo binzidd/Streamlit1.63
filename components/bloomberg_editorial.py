@@ -12,10 +12,10 @@ import streamlit as st
 _HTML = '<div id="blm_root" style="width:100%;"></div>'
 
 # ---------------------------------------------------------------------------
-# JS module — blm_v4
+# JS module — blm_v6
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* blm_v5 */
+/* blm_v6 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -934,37 +934,114 @@ export default function(component) {
             return svg;
         }
 
+        // ── Bloomberg KPI chapter: 2-col metrics left + analysis right (dark theme) ──
         var kpiGridEl = document.createElement('div');
-        kpiGridEl.style.cssText = 'position:absolute;inset:0;display:none;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:12px;padding:40px;box-sizing:border-box;background:#1e3a5f;';
+        kpiGridEl.style.cssText = 'position:absolute;inset:0;display:none;flex-direction:row;background:#0f172a;';
         chartCol.appendChild(kpiGridEl);
+
+        // Left: 2-col card grid
+        var blmKpiLeft = document.createElement('div');
+        blmKpiLeft.style.cssText = [
+            'width:62%;padding:28px 16px 28px 32px;box-sizing:border-box;',
+            'display:grid;grid-template-columns:1fr 1fr;gap:9px;align-content:center;',
+        ].join('');
+        kpiGridEl.appendChild(blmKpiLeft);
 
         var kpiTileRefs = [];
         FY26_KPI_TILES.forEach(function(spec) {
             var tile = document.createElement('div');
             tile.className = 'blm-kpi-tile';
-            tile.style.cssText = 'background:rgba(255,255,255,0.06);backdrop-filter:blur(12px);border-radius:12px;padding:18px 20px;border:1px solid rgba(255,255,255,0.1);display:flex;flex-direction:column;gap:4px;transform:translateY(14px);opacity:0;transition:none;';
-            tile.innerHTML = [
-                '<div style="font-size:11px;font-weight:600;letter-spacing:0.07em;color:rgba(255,255,255,0.5);text-transform:uppercase;">' + spec.label + '</div>',
-                '<div style="display:flex;align-items:baseline;gap:8px;">',
-                '<div style="font-family:\'Playfair Display\',serif;font-size:1.55rem;font-weight:900;color:#ffffff;line-height:1.1;">' + spec.value + '</div>',
-                '<div style="font-size:0.75rem;font-weight:700;color:' + (spec.good ? '#4ade80' : '#f87171') + ';">' + spec.change + '</div>',
-                '</div>',
-                '<div style="font-size:11px;color:rgba(255,255,255,0.4);">' + spec.sub + '</div>',
+            tile.style.cssText = [
+                'background:rgba(255,255,255,0.05);border-radius:10px;',
+                'padding:14px 16px 12px;border:1px solid rgba(255,255,255,0.09);',
+                'display:flex;flex-direction:column;gap:2px;',
+                'transform:translateY(14px);opacity:0;transition:none;',
             ].join('');
+
+            var lbl = document.createElement('div');
+            lbl.textContent = spec.label;
+            lbl.style.cssText = 'font-size:9px;font-weight:700;letter-spacing:0.1em;color:rgba(255,255,255,0.4);text-transform:uppercase;';
+
+            var vr = document.createElement('div');
+            vr.style.cssText = 'display:flex;align-items:baseline;gap:6px;margin-top:2px;';
+
+            var vEl = document.createElement('span');
+            vEl.textContent = spec.value;
+            vEl.style.cssText = 'font-family:"Playfair Display",serif;font-size:1.3rem;font-weight:900;color:#ffffff;line-height:1.1;';
+
+            var cEl = document.createElement('span');
+            cEl.textContent = spec.change;
+            cEl.style.cssText = 'font-size:0.7rem;font-weight:700;color:' + (spec.good ? '#4ade80' : '#f87171') + ';';
+
+            vr.appendChild(vEl); vr.appendChild(cEl);
+
+            var sEl = document.createElement('div');
+            sEl.textContent = spec.sub;
+            sEl.style.cssText = 'font-size:9px;color:rgba(255,255,255,0.25);';
+
+            tile.appendChild(lbl); tile.appendChild(vr); tile.appendChild(sEl);
+
             var sparkVals = BLM_SPARKLINE[spec.label];
             if (sparkVals && sparkVals.length) {
                 tile.appendChild(makeBlmSparkline(sparkVals, spec.good));
             }
-            kpiGridEl.appendChild(tile);
+            blmKpiLeft.appendChild(tile);
             kpiTileRefs.push(tile);
         });
+
         var kpiFooter = document.createElement('div');
-        kpiFooter.style.cssText = 'grid-column:1/-1;font-size:10px;color:rgba(255,255,255,0.25);text-align:center;align-self:end;';
-        kpiFooter.textContent = 'Source: CBA Profit Announcement, year ended 30 June 2026. Chart data is illustrative.';
-        kpiGridEl.appendChild(kpiFooter);
+        kpiFooter.style.cssText = 'grid-column:1/-1;font-size:9px;color:rgba(255,255,255,0.18);padding-top:4px;';
+        kpiFooter.textContent = 'Source: CBA Profit Announcement, year ended 30 June 2026.';
+        blmKpiLeft.appendChild(kpiFooter);
+
+        // Right: editorial analysis panel
+        var blmKpiRight = document.createElement('div');
+        blmKpiRight.style.cssText = [
+            'width:38%;padding:32px 28px 32px 24px;box-sizing:border-box;',
+            'display:flex;flex-direction:column;justify-content:center;gap:20px;',
+            'border-left:1px solid rgba(255,255,255,0.08);',
+        ].join('');
+        kpiGridEl.appendChild(blmKpiRight);
+
+        var BLM_INSIGHTS = [
+            { eyebrow:'PRIMARY PROFIT DRIVER', color:'#93c5fd', stat:'NII $25.6B · 84.7%',
+              body:'Net interest income commands 84.7% of total revenue — the highest concentration among Australian majors. 425bps of RBA hikes compounded into loan repricing, lifting NII 7% year-on-year.' },
+            { eyebrow:'NIM — RATE CYCLE VERDICT', color:'#fca5a5', stat:'2.05% — down 3bps from FY25',
+              body:'Margins peaked at 2.10% in FY23 and have compressed 5bps since as term deposit repricing accelerated. February 2025 rate easing should relieve pressure, but competitive dynamics in home loans remain acute.' },
+            { eyebrow:'BIGGEST DIVISION EARNER', color:'#fde68a', stat:'Business Banking $4.54B +11%',
+              body:'NIM of 3.39% — 134bps above group average — and CTI of 32.2% make Business Banking the highest-quality earnings engine. SME tailwinds and disciplined repricing drove the standout result.' },
+            { eyebrow:'CREDIT QUALITY & CAPITAL', color:'#86efac', stat:'LIE 8bps · CET1 12.0% · Payout 76.9%',
+              body:'Loan impairment at near-historic lows despite slowing macro. CET1 at 12.0% sits 75bps above APRA\'s unquestionably strong benchmark. Fully franked DPS of 505c reflects disciplined capital management.' },
+        ];
+
+        BLM_INSIGHTS.forEach(function(ins) {
+            var block = document.createElement('div');
+            block.style.cssText = 'display:flex;flex-direction:column;gap:4px;';
+
+            var ey = document.createElement('div');
+            ey.textContent = ins.eyebrow;
+            ey.style.cssText = 'font-size:8px;font-weight:700;letter-spacing:0.14em;color:rgba(255,255,255,0.35);text-transform:uppercase;font-family:"Inter",sans-serif;';
+
+            var st = document.createElement('div');
+            st.textContent = ins.stat;
+            st.style.cssText = 'font-size:0.82rem;font-weight:800;color:' + ins.color + ';font-family:"Inter",sans-serif;';
+
+            var bd = document.createElement('div');
+            bd.textContent = ins.body;
+            bd.style.cssText = 'font-size:11px;line-height:1.55;color:rgba(255,255,255,0.55);font-family:"Inter",sans-serif;';
+
+            block.appendChild(ey); block.appendChild(st); block.appendChild(bd);
+            blmKpiRight.appendChild(block);
+
+            if (ins !== BLM_INSIGHTS[BLM_INSIGHTS.length - 1]) {
+                var hr = document.createElement('div');
+                hr.style.cssText = 'height:1px;background:rgba(255,255,255,0.06);';
+                blmKpiRight.appendChild(hr);
+            }
+        });
 
         function showKpiGrid() {
-            kpiGridEl.style.display = 'grid';
+            kpiGridEl.style.display = 'flex';
             kpiTileRefs.forEach(function(tile, ci) {
                 tile.style.transform  = 'translateY(14px)';
                 tile.style.opacity    = '0';
@@ -973,7 +1050,7 @@ export default function(component) {
                     tile.style.transition = 'transform 0.45s cubic-bezier(0.34,1.2,0.64,1),opacity 0.4s ease';
                     tile.style.transform  = 'translateY(0)';
                     tile.style.opacity    = '1';
-                }, ci * 65);
+                }, ci * 55);
             });
         }
         function hideKpiGrid() {
@@ -1196,10 +1273,16 @@ export default function(component) {
             parentElement._blmRO = ro;
         }
 
-        // Initial render
+        // Initial render — show area chart immediately (ch1) so the page
+        // never looks blank on first load. Scroll will update chapter naturally.
         requestAnimationFrame(function() {
             svgEl.style.opacity = '0';
             onScroll();
+            // If still on splash after scroll detection, force ch1 so the
+            // right panel shows the income area chart instead of blank navy.
+            setTimeout(function() {
+                if (currentChapter <= 0) { activateChapter(1); }
+            }, 400);
         });
 
     } // end buildStory
