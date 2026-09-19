@@ -1,0 +1,65 @@
+{
+  "0": {
+    "headline": "CBA Posts Record A$30.2B Operating Income in FY26",
+    "body": "Cash operating income rose to A$30.2B, up from ~A$22B five years ago, driven by the NII engine at 84.7% of revenue. The franchise demonstrated durability through rate cycles, compounding income at ~6% CAGR since FY21.",
+    "pull_quote": "A$30.2B — five-year income record",
+    "sentiment": "positive",
+    "key_stat": "A$30.2B",
+    "key_label": "Cash Operating Income",
+    "bg": "white"
+  },
+  "1": {
+    "headline": "Business Banking Leads Group at +11% NPAT",
+    "body": "Business Banking delivered 11% NPAT growth on disciplined volume growth and repricing, offsetting NZ's 7% decline on macro headwinds. Retail held firm despite LIE up 39% from an ultra-low base.",
+    "pull_quote": "+11% Business Banking — standout division",
+    "sentiment": "positive",
+    "key_stat": "+11%",
+    "key_label": "Business Banking NPAT growth",
+    "bg": "slate"
+  },
+  "2": {
+    "headline": "NII Commands 84.7% of Revenue Amid Margin Pressure",
+    "body": "NII of A$25.6B dominates the revenue mix at 84.7%, an unusually high share versus global peers, while other income of A$4.6B covers fees, trading and insurance. Structural NIM pressure from deposit repricing remains the key watch item.",
+    "pull_quote": "84.7% NII share — highest among major banks",
+    "sentiment": "cautious",
+    "key_stat": "84.7%",
+    "key_label": "NII share of income",
+    "bg": "white"
+  },
+  "3": {
+    "headline": "Business Banking NIM at 3.39% Towers Over Group Average",
+    "body": "Business Banking's 3.39% NIM leads the group's 2.05% by 134bps, reflecting disciplined SME repricing and lower deposit competition. Retail NIM faces ongoing fixed-rate roll-off drag, while NZ margins are compressed by competition and provisioning.",
+    "pull_quote": "3.39% Business NIM — 134bps above group",
+    "sentiment": "positive",
+    "key_stat": "3.39%",
+    "key_label": "Business Banking NIM best-in-class",
+    "bg": "navy"
+  },
+  "4": {
+    "headline": "CTI Tightens 20bps to 45.5% as Productivity Gains Show",
+    "body": "Opex of A$13.8B against A$30.2B income delivers a 45.5% CTI, improving 20bps year-on-year, with pre-provision profit at a record A$16.5B. Technology and compliance remain the largest cost drivers but the productivity overlay is working.",
+    "pull_quote": "45.5% CTI — record pre-provision profit of A$16.5B",
+    "sentiment": "positive",
+    "key_stat": "45.5%",
+    "key_label": "CTI minus 20bps",
+    "bg": "white"
+  },
+  "5": {
+    "headline": "CBA's ~20x PE Premium Tests Patience at Cycle Peak",
+    "body": "CBA trades at ~20x forward earnings versus peers at 13-15x, supported by earnings quality, franchise dominance and a 505c DPS at a 78% payout ratio. NIM headwinds and rising credit costs raise questions about whether that premium is fully earned.",
+    "pull_quote": "~20x PE — can the franchise premium hold?",
+    "sentiment": "cautious",
+    "key_stat": "~20x",
+    "key_label": "PE premium to peers",
+    "bg": "dark"
+  },
+  "6": {
+    "headline": "ROE Rises 50bps to 14.0% as CBA Reaffirms Quality Tag",
+    "body": "Cash NPAT of A$11.0B, ROE of 14.0% (+50bps), EPS of 656.9c and DPS of 505c confirm CBA as Australia's highest-returning major bank. CET1 at 12.0% (-30bps) stays comfortably above APRA's 11.25% unquestionably strong benchmark.",
+    "pull_quote": "14.0% ROE — highest-returning major bank",
+    "sentiment": "positive",
+    "key_stat": "14.0%",
+    "key_label": "Cash ROE plus 50bps",
+    "bg": "navy"
+  }
+}

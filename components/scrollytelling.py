@@ -1,4 +1,4 @@
-"""Scrollytelling earnings story — Streamlit V2 component. CFO-grade, grounded in CBA FY26 data."""
+"""Scrollytelling earnings story — Streamlit V2 component. CFO-grade, grounded in CBA FY26 data. v11"""
 from __future__ import annotations
 import streamlit as st
 
@@ -11,7 +11,7 @@ _HTML = '<div id="st_scroll_root" style="width:100%;"></div>'
 # JS module (D3 v7) — v10
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* v10 */
+/* v11 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -226,6 +226,10 @@ export default function(component) {
             { num: '07', headline: 'CBA FY26 — Key Performance Indicators',                body: 'All metrics from the Profit Announcement (year ended 30 June 2026). Nine KPIs that define the bank\'s financial position.' },
         ];
 
+        // ------------------------------------------------ AI commentary
+        var commentary = data.commentary || {};
+        function getCommentary(i) { return commentary[String(i)] || commentary[i] || null; }
+
         // ------------------------------------------------ closure state
         var selectedSeg = parentElement._selectedSeg || (segments[0] || 'Retail Banking Services');
         var currentChapter = 0;
@@ -306,6 +310,16 @@ export default function(component) {
         var infoBody = document.createElement('div');
         infoBody.style.cssText = 'font-size:13px;color:#475569;line-height:1.55;';
         infoCard.appendChild(infoBody);
+
+        var infoKeyStat = document.createElement('div');
+        infoKeyStat.className = 'info-key-stat';
+        infoKeyStat.style.cssText = 'font-size:32px;color:#1e3a5f;font-family:Georgia,serif;font-weight:800;display:none;margin-top:10px;';
+        infoCard.appendChild(infoKeyStat);
+
+        var infoPullQuote = document.createElement('div');
+        infoPullQuote.className = 'info-pull-quote';
+        infoPullQuote.style.cssText = 'font-size:12px;font-style:italic;color:#1e3a5f;border-left:3px solid #2a78d6;padding:8px 12px;background:#f0f7ff;margin-top:8px;border-radius:0 6px 6px 0;display:none;';
+        infoCard.appendChild(infoPullQuote);
 
         // --- Prev / Next arrows (bottom-right) ---
         var navRow = document.createElement('div');
@@ -394,8 +408,22 @@ export default function(component) {
             });
             var info = CHAPTER_INFO[currentChapter];
             infoChapterNum.textContent = info.num + ' — ' + CHAPTER_TITLES[currentChapter];
-            infoHeadline.textContent   = info.headline;
-            infoBody.textContent       = info.body;
+            var cm = getCommentary(currentChapter);
+            var fallback = CHAPTER_INFO[currentChapter] || {};
+            infoHeadline.textContent = cm ? cm.headline : (fallback.headline || CHAPTER_TITLES[currentChapter]);
+            infoBody.textContent     = cm ? cm.body     : (fallback.body || '');
+            if (cm && cm.key_stat) {
+                infoKeyStat.textContent  = cm.key_stat;
+                infoKeyStat.style.display = 'block';
+            } else {
+                infoKeyStat.style.display = 'none';
+            }
+            if (cm && cm.pull_quote) {
+                infoPullQuote.textContent  = cm.pull_quote;
+                infoPullQuote.style.display = 'block';
+            } else {
+                infoPullQuote.style.display = 'none';
+            }
             // Spring-in the info card
             infoCard.style.opacity          = '0';
             infoCard.style.transform        = 'translateY(16px)';
@@ -441,6 +469,18 @@ export default function(component) {
             var dx = e.changedTouches[0].clientX - touchStartX;
             if (Math.abs(dx) > 50) goTo(currentChapter + (dx < 0 ? 1 : -1));
         }, { passive: true });
+
+        // --- Wheel/trackpad navigation ---
+        var wheelAccum = 0, wheelTimer = null;
+        parentElement.addEventListener('wheel', function(e) {
+            e.preventDefault();
+            wheelAccum += e.deltaY;
+            clearTimeout(wheelTimer);
+            wheelTimer = setTimeout(function() {
+                if (Math.abs(wheelAccum) > 40) goTo(currentChapter + (wheelAccum > 0 ? 1 : -1));
+                wheelAccum = 0;
+            }, 80);
+        }, {passive: false});
 
         // --- Click on bare SVG/background advances ---
         parentElement.addEventListener('click', function(e) {

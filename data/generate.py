@@ -28,7 +28,7 @@ SEGMENTS = {
         "cti": 0.38,
         "impair_rate": 0.0018,
     },
-    "Institutional Banking & Markets": {
+    "Institutional Banking and Markets": {
         "regions": ["NSW/ACT", "VIC/TAS", "QLD", "WA", "SA/NT"],
         "income_share": 0.18,
         "nim": 0.016,
@@ -67,7 +67,7 @@ DEPARTMENTS: dict[str, dict[str, float]] = {
         "Commercial Banking": 0.62,
         "Small Business": 0.38,
     },
-    "Institutional Banking & Markets": {
+    "Institutional Banking and Markets": {
         "Corporate & Institutional Banking": 0.48,
         "Markets & Treasury": 0.34,
         "Advisory": 0.18,
