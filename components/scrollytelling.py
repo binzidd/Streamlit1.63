@@ -11,7 +11,7 @@ _HTML = '<div id="st_scroll_root" style="width:100%;"></div>'
 # JS module (D3 v7) — v10
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* v12 */
+/* v13 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -365,20 +365,49 @@ export default function(component) {
         };
 
         function makeSparkline(values, accentColor) {
-            var c = document.createElement('canvas');
-            c.width = 90; c.height = 28;
-            c.style.cssText = 'display:block;margin-top:5px;opacity:0.9;';
-            if (!values || !values.length) return c;
-            var ctx = c.getContext('2d');
+            var W = 200, H = 44, px = 2, py = 6, n = values.length;
+            if (!values || n < 2) { var el = document.createElement('div'); return el; }
             var mn = Math.min.apply(null, values), mx = Math.max.apply(null, values);
-            var rng = mx - mn || 1, n = values.length;
-            var bw = Math.floor((c.width - (n - 1) * 2) / n), bh = c.height - 4;
-            values.forEach(function(v, i) {
-                var h = Math.max(3, Math.round(((v - mn) / rng) * bh));
-                ctx.fillStyle = i === n - 1 ? (accentColor || '#1e3a5f') : '#cbd5e1';
-                ctx.fillRect(i * (bw + 2), c.height - h - 2, bw, h);
+            var rng = mx - mn || mx * 0.05 || 1;
+            // Expand range slightly so line doesn't hug edges
+            mn -= rng * 0.08; mx += rng * 0.08; rng = mx - mn;
+            var pts = values.map(function(v, i) {
+                return [px + (i / (n - 1)) * (W - 2 * px),
+                        (H - py) - ((v - mn) / rng) * (H - 2 * py)];
             });
-            return c;
+            // Smooth cubic bezier path
+            function curvePath(pts) {
+                var d = 'M' + pts[0][0] + ',' + pts[0][1];
+                for (var i = 1; i < pts.length; i++) {
+                    var cx = (pts[i-1][0] + pts[i][0]) / 2;
+                    d += 'C' + cx + ',' + pts[i-1][1] + ',' + cx + ',' + pts[i][1] + ',' + pts[i][0] + ',' + pts[i][1];
+                }
+                return d;
+            }
+            var linePath = curvePath(pts);
+            var areaPath = linePath + 'L' + pts[n-1][0] + ',' + H + 'L' + pts[0][0] + ',' + H + 'Z';
+            var NS = 'http://www.w3.org/2000/svg';
+            var svg = document.createElementNS(NS, 'svg');
+            svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+            svg.setAttribute('preserveAspectRatio', 'none');
+            svg.style.cssText = 'width:100%;height:44px;display:block;margin-top:8px;overflow:visible;';
+            var area = document.createElementNS(NS, 'path');
+            area.setAttribute('d', areaPath);
+            area.setAttribute('fill', accentColor || '#1e3a5f');
+            area.setAttribute('fill-opacity', '0.10');
+            svg.appendChild(area);
+            var line = document.createElementNS(NS, 'path');
+            line.setAttribute('d', linePath);
+            line.setAttribute('fill', 'none');
+            line.setAttribute('stroke', accentColor || '#1e3a5f');
+            line.setAttribute('stroke-width', '1.8');
+            line.setAttribute('stroke-linecap', 'round');
+            svg.appendChild(line);
+            var dot = document.createElementNS(NS, 'circle');
+            dot.setAttribute('cx', pts[n-1][0]); dot.setAttribute('cy', pts[n-1][1]);
+            dot.setAttribute('r', '3'); dot.setAttribute('fill', accentColor || '#1e3a5f');
+            svg.appendChild(dot);
+            return svg;
         }
 
         kpiGrid = document.createElement('div');

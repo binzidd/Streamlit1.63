@@ -15,7 +15,7 @@ _HTML = '<div id="blm_root" style="width:100%;"></div>'
 # JS module — blm_v4
 # ---------------------------------------------------------------------------
 _JS = r"""
-/* blm_v4 */
+/* blm_v5 */
 export default function(component) {
     const { parentElement, data } = component;
 
@@ -890,20 +890,48 @@ export default function(component) {
         };
 
         function makeBlmSparkline(values, good) {
-            var c = document.createElement('canvas');
-            c.width = 90; c.height = 24;
-            c.style.cssText = 'display:block;margin-top:6px;opacity:0.8;';
-            if (!values || !values.length) return c;
-            var ctx = c.getContext('2d');
+            var accent = good ? '#4ade80' : '#f87171';
+            var W = 200, H = 44, px = 2, py = 6, n = values.length;
+            if (!values || n < 2) { var el = document.createElement('div'); return el; }
             var mn = Math.min.apply(null, values), mx = Math.max.apply(null, values);
-            var rng = mx - mn || 1, n = values.length;
-            var bw = Math.floor((c.width - (n - 1) * 2) / n), bh = c.height - 4;
-            values.forEach(function(v, i) {
-                var h = Math.max(3, Math.round(((v - mn) / rng) * bh));
-                ctx.fillStyle = i === n - 1 ? (good ? '#4ade80' : '#f87171') : 'rgba(255,255,255,0.2)';
-                ctx.fillRect(i * (bw + 2), c.height - h - 2, bw, h);
+            var rng = mx - mn || mx * 0.05 || 1;
+            mn -= rng * 0.08; mx += rng * 0.08; rng = mx - mn;
+            var pts = values.map(function(v, i) {
+                return [px + (i / (n - 1)) * (W - 2 * px),
+                        (H - py) - ((v - mn) / rng) * (H - 2 * py)];
             });
-            return c;
+            function curvePath(pts) {
+                var d = 'M' + pts[0][0] + ',' + pts[0][1];
+                for (var i = 1; i < pts.length; i++) {
+                    var cx = (pts[i-1][0] + pts[i][0]) / 2;
+                    d += 'C' + cx + ',' + pts[i-1][1] + ',' + cx + ',' + pts[i][1] + ',' + pts[i][0] + ',' + pts[i][1];
+                }
+                return d;
+            }
+            var linePath = curvePath(pts);
+            var areaPath = linePath + 'L' + pts[n-1][0] + ',' + H + 'L' + pts[0][0] + ',' + H + 'Z';
+            var NS = 'http://www.w3.org/2000/svg';
+            var svg = document.createElementNS(NS, 'svg');
+            svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+            svg.setAttribute('preserveAspectRatio', 'none');
+            svg.style.cssText = 'width:100%;height:44px;display:block;margin-top:8px;overflow:visible;';
+            var area = document.createElementNS(NS, 'path');
+            area.setAttribute('d', areaPath);
+            area.setAttribute('fill', accent);
+            area.setAttribute('fill-opacity', '0.15');
+            svg.appendChild(area);
+            var line = document.createElementNS(NS, 'path');
+            line.setAttribute('d', linePath);
+            line.setAttribute('fill', 'none');
+            line.setAttribute('stroke', accent);
+            line.setAttribute('stroke-width', '1.8');
+            line.setAttribute('stroke-linecap', 'round');
+            svg.appendChild(line);
+            var dot = document.createElementNS(NS, 'circle');
+            dot.setAttribute('cx', pts[n-1][0]); dot.setAttribute('cy', pts[n-1][1]);
+            dot.setAttribute('r', '3'); dot.setAttribute('fill', accent);
+            svg.appendChild(dot);
+            return svg;
         }
 
         var kpiGridEl = document.createElement('div');
